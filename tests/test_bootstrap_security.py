@@ -18,6 +18,7 @@ import paramiko
 
 from scripts.bootstrap_admin import (
     evaluate_swap_state,
+    format_verification_summary,
     get_known_hosts_path,
     load_env_config,
     parse_sshd_config_t,
@@ -254,6 +255,30 @@ maxauthtries 4
         is_valid, errors = verify_effective_sshd_settings(config)
         self.assertFalse(is_valid)
         self.assertTrue(any("passwordauthentication" in err.lower() for err in errors))
+
+    def test_format_verification_summary_distinguishes_full_vs_partial(self) -> None:
+        """Report must not describe effective SSH config as verified if diagnostic check failed."""
+        # Full verification case:
+        full_msg, is_full = format_verification_summary(
+            key_verified=True, sudo_verified=True, sshd_effective_verified=True
+        )
+        self.assertTrue(is_full)
+        self.assertIn("FULL VERIFICATION", full_msg)
+
+        # Partial verification case (effective sshd not inspected):
+        partial_msg, is_partial = format_verification_summary(
+            key_verified=True, sudo_verified=True, sshd_effective_verified=False
+        )
+        self.assertFalse(is_partial)
+        self.assertIn("PARTIAL VERIFICATION", partial_msg)
+        self.assertIn("Effective sshd configuration was NOT verified", partial_msg)
+
+        # Failed verification case (e.g. sudo failed):
+        fail_msg, is_ok = format_verification_summary(
+            key_verified=True, sudo_verified=False, sshd_effective_verified=True
+        )
+        self.assertFalse(is_ok)
+        self.assertIn("FAILED", fail_msg)
 
 
 class TestSwapRobustness(unittest.TestCase):

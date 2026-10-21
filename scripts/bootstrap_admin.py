@@ -217,6 +217,34 @@ def verify_effective_sshd_settings(
     return (len(errors) == 0, errors)
 
 
+def format_verification_summary(
+    key_verified: bool,
+    sudo_verified: bool,
+    sshd_effective_verified: bool,
+) -> tuple[str, bool]:
+    """
+    Format clear verification gate status and determine whether full verification was achieved.
+    Returns (summary_text, is_fully_verified).
+    Accurately distinguishes between full verification (key + sudo + effective sshd)
+    and partial verification where effective sshd could not be inspected.
+    """
+    if not (key_verified and sudo_verified):
+        return ("Verification FAILED: Core access gates (SSH key or sudo) were not validated.", False)
+
+    if sshd_effective_verified:
+        return (
+            "FULL VERIFICATION: Non-root SSH key access, sudo execution, and effective sshd configuration verified.",
+            True,
+        )
+
+    return (
+        "PARTIAL VERIFICATION: Non-root SSH key access and sudo execution validated. "
+        "Effective sshd configuration was NOT verified on the server (diagnostic check unverified). "
+        "Ansible baseline hardening must perform strict sshd verification before reloading daemon.",
+        False,
+    )
+
+
 def evaluate_swap_state(
     active_swaps: list[str],
     swap_file_path: str,
@@ -427,6 +455,7 @@ def main() -> int:
         print("[+] Dual-session sudo verification PASSED: 'sudo -n id -u' executed as UID 0.", flush=True)
 
         # Check effective sshd configuration in secondary session
+        sshd_effective_verified = False
         rc, out, err = execute_remote_cmd(
             test_client,
             f"sudo sshd -T -C user={shlex.quote(admin_user)},host=127.0.0.1,addr=127.0.0.1",
@@ -439,11 +468,22 @@ def main() -> int:
             effective_cfg = parse_sshd_config_t(out)
             pubkey_val = effective_cfg.get("pubkeyauthentication", "unknown")
             print(f"[+] Verified effective remote sshd: PubkeyAuthentication={pubkey_val}.", flush=True)
+            sshd_effective_verified = True
         else:
             print(f"[!] Warning: Unable to inspect remote sshd -T: {err}", flush=True)
+            print("    Notice: Effective SSH configuration was NOT verified during bootstrap.", flush=True)
 
         test_client.close()
-        print("[+] Dual-Session Verification Gate successfully validated!", flush=True)
+
+        gate_summary, is_fully_verified = format_verification_summary(
+            key_verified=True,
+            sudo_verified=True,
+            sshd_effective_verified=sshd_effective_verified,
+        )
+        if is_fully_verified:
+            print(f"[+] {gate_summary}", flush=True)
+        else:
+            print(f"[!] {gate_summary}", flush=True)
 
         # Step 4: Write local uncommitted inventory for Ansible
         inventory_dir = Path("ansible") / "inventory"
@@ -474,7 +514,11 @@ all:
         return 1
 
     root_client.close()
-    print("\n[SUCCESS] Phase A complete: 'vexteradmin' is provisioned, key-verified, and Ansible is configured.", flush=True)
+    if is_fully_verified:
+        print("\n[SUCCESS] Phase A complete: 'vexteradmin' is provisioned, key-verified, effective sshd verified, and Ansible is configured.", flush=True)
+    else:
+        print("\n[SUCCESS (PARTIAL SSHD VERIFICATION)] Phase A complete: 'vexteradmin' is provisioned and key-verified.", flush=True)
+        print("Note: Effective sshd configuration was not verified in this phase; Ansible baseline hardening must strictly verify sshd before reloading.", flush=True)
     return 0
 
 
