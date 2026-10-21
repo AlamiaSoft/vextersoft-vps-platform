@@ -54,6 +54,12 @@ try {
         $pyArgs += @("--known-hosts", $KnownHosts)
     }
     python -u @pyArgs
+    $pyExit = $LASTEXITCODE
+    if ($pyExit -ne 0) {
+        Write-Host "`n[-] Bootstrap execution failed with exit code $pyExit." -ForegroundColor Red
+        exit $pyExit
+    }
+    Write-Host "`n[+] Bootstrap execution completed successfully (Exit Code 0)." -ForegroundColor Green
 } finally {
     # Immediately clear credentials from environment and memory
     Remove-Item Env:\BOOTSTRAP_ROOT_PASSWORD -ErrorAction SilentlyContinue

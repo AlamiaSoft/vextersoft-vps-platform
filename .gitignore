@@ -24,3 +24,5 @@ Thumbs.db
 
 # Local scratch & operational tooling
 scripts/github_issues.py
+ansible/inventory/hosts.yml
+logs/
