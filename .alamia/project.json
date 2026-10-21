@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "system_version": "0.2.0",
+  "project_name": "vextersoft-vps-platform",
+  "stack": {
+    "primary_language": "unknown",
+    "languages": [],
+    "frameworks": [],
+    "package_managers": [],
+    "manifests": [],
+    "containers": []
+  },
+  "testing": {
+    "runner": "unknown",
+    "command": "",
+    "test_dirs": [],
+    "has_tests": false
+  },
+  "memory": {
+    "has_memory_system": true,
+    "handoff_dir": null,
+    "architecture_dir": ".ai/permanent/architecture",
+    "worklogs": [],
+    "latest_handoff_file": null
+  },
+  "lifecycle": {
+    "groups": [
+      "bootstrap",
+      "implement",
+      "qa",
+      "architecture-review",
+      "session-end"
+    ]
+  }
+}

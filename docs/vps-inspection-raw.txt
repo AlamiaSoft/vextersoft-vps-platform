@@ -1,0 +1,260 @@
+================================================================================
+SECTION: OS Architecture & Kernel
+COMMAND: uname -a
+================================================================================
+[STDOUT]
+Linux vmi3682629 6.8.0-139-generic #139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+
+================================================================================
+SECTION: OS Release Details
+COMMAND: cat /etc/os-release
+================================================================================
+[STDOUT]
+PRETTY_NAME="Ubuntu 24.04.5 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+VERSION="24.04.5 LTS (Noble Numbat)"
+VERSION_CODENAME=noble
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=noble
+LOGO=ubuntu-logo
+
+================================================================================
+SECTION: CPU Info
+COMMAND: lscpu
+================================================================================
+[STDOUT]
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           48 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  6
+On-line CPU(s) list:                     0-5
+Vendor ID:                               AuthenticAMD
+BIOS Vendor ID:                          QEMU
+Model name:                              AMD EPYC Processor (with IBPB)
+BIOS Model name:                         pc-i440fx-9.0  CPU @ 2.0GHz
+BIOS CPU family:                         1
+CPU family:                              23
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      6
+Socket(s):                               1
+Stepping:                                2
+BogoMIPS:                                5589.49
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext ssbd ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 rdseed adx smap clflushopt sha_ni xsaveopt xsavec xgetbv1 arat
+Hypervisor vendor:                       KVM
+Virtualization type:                     full
+L1d cache:                               192 KiB (6 instances)
+L1i cache:                               384 KiB (6 instances)
+L2 cache:                                3 MiB (6 instances)
+L3 cache:                                8 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-5
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Mitigation; untrained return thunk; SMT disabled
+Vulnerability Spec rstack overflow:      Vulnerable: Safe RET, no microcode
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Retpolines; IBPB conditional; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+
+================================================================================
+SECTION: Memory & Swap
+COMMAND: free -h
+================================================================================
+[STDOUT]
+total        used        free      shared  buff/cache   available
+Mem:            11Gi       535Mi        11Gi       1.0Mi       325Mi        11Gi
+Swap:             0B          0B          0B
+
+================================================================================
+SECTION: Block Devices
+COMMAND: lsblk -f
+================================================================================
+[STDOUT]
+NAME    FSTYPE  FSVER LABEL           UUID                                 FSAVAIL FSUSE% MOUNTPOINTS
+sda                                                                                       
+├─sda1  ext4    1.0   cloudimg-rootfs 9a3e62be-4b82-4a7a-8f47-0b25d728fa3a  190.4G     1% /
+├─sda14                                                                                   
+├─sda15 vfat    FAT32 UEFI            B303-7D7B                              98.2M     6% /boot/efi
+└─sda16 ext4    1.0   BOOT            47e87460-6f19-41ce-8fb0-5e896fcb3673  702.1M    13% /boot
+sr0     iso9660       cidata          2026-10-20-15-13-23-00
+
+================================================================================
+SECTION: Disk Usage & Filesystems
+COMMAND: df -hT
+================================================================================
+[STDOUT]
+Filesystem     Type   Size  Used Avail Use% Mounted on
+tmpfs          tmpfs  1.2G  1.1M  1.2G   1% /run
+/dev/sda1      ext4   193G  2.3G  191G   2% /
+tmpfs          tmpfs  5.9G     0  5.9G   0% /dev/shm
+tmpfs          tmpfs  5.0M     0  5.0M   0% /run/lock
+/dev/sda16     ext4   881M  117M  703M  15% /boot
+/dev/sda15     vfat   105M  6.2M   99M   6% /boot/efi
+tmpfs          tmpfs  1.2G   12K  1.2G   1% /run/user/0
+
+================================================================================
+SECTION: Network Interfaces
+COMMAND: ip -br addr
+================================================================================
+[STDOUT]
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+eth0             UP             5.189.128.157/18 2a02:c207:2368:2629::1/64 fe80::250:56ff:fe68:9c70/64
+
+================================================================================
+SECTION: Routing Table
+COMMAND: ip route
+================================================================================
+[STDOUT]
+default via 5.189.128.1 dev eth0 proto static
+
+================================================================================
+SECTION: DNS Resolvers
+COMMAND: cat /etc/resolv.conf
+================================================================================
+[STDOUT]
+# This is /run/systemd/resolve/stub-resolv.conf managed by man:systemd-resolved(8).
+# Do not edit.
+#
+# This file might be symlinked as /etc/resolv.conf. If you're looking at
+# /etc/resolv.conf and seeing this text, you have followed the symlink.
+#
+# This is a dynamic resolv.conf file for connecting local clients to the
+# internal DNS stub resolver of systemd-resolved. This file lists all
+# configured search domains.
+#
+# Run "resolvectl status" to see details about the uplink DNS servers
+# currently in use.
+#
+# Third party programs should typically not access this file directly, but only
+# through the symlink at /etc/resolv.conf. To manage man:resolv.conf(5) in a
+# different way, replace this symlink by a static file or a different symlink.
+#
+# See man:systemd-resolved.service(8) for details about the supported modes of
+# operation for /etc/resolv.conf.
+
+nameserver 127.0.0.53
+options edns0 trust-ad
+search .
+
+================================================================================
+SECTION: Listening Sockets & Ports
+COMMAND: ss -tulpn
+================================================================================
+[STDOUT]
+Netid State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                                                 
+udp   UNCONN 0      0         127.0.0.54:53        0.0.0.0:*    users:(("systemd-resolve",pid=30057,fd=16))            
+udp   UNCONN 0      0      127.0.0.53%lo:53        0.0.0.0:*    users:(("systemd-resolve",pid=30057,fd=14))            
+tcp   LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*    users:(("systemd-resolve",pid=30057,fd=15))            
+tcp   LISTEN 0      4096      127.0.0.54:53        0.0.0.0:*    users:(("systemd-resolve",pid=30057,fd=17))            
+tcp   LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=8639,fd=3),("systemd",pid=1,fd=107))
+tcp   LISTEN 0      4096            [::]:22           [::]:*    users:(("sshd",pid=8639,fd=4),("systemd",pid=1,fd=108))
+
+================================================================================
+SECTION: Firewall (UFW Status)
+COMMAND: ufw status verbose || echo 'ufw not active or not installed'
+================================================================================
+[STDOUT]
+Status: inactive
+
+================================================================================
+SECTION: Firewall (iptables rules)
+COMMAND: iptables -S
+================================================================================
+[STDOUT]
+-P INPUT ACCEPT
+-P FORWARD ACCEPT
+-P OUTPUT ACCEPT
+
+================================================================================
+SECTION: Running Services
+COMMAND: systemctl list-units --type=service --state=running --no-pager
+================================================================================
+[STDOUT]
+UNIT                        LOAD   ACTIVE SUB     DESCRIPTION
+  cron.service                loaded active running Regular background program processing daemon
+  dbus.service                loaded active running D-Bus System Message Bus
+  fwupd.service               loaded active running Firmware update daemon
+  getty@tty1.service          loaded active running Getty on tty1
+  ModemManager.service        loaded active running Modem Manager
+  multipathd.service          loaded active running Device-Mapper Multipath Device Controller
+  polkit.service              loaded active running Authorization Manager
+  rsyslog.service             loaded active running System Logging Service
+  serial-getty@ttyS0.service  loaded active running Serial Getty on ttyS0
+  snapd.service               loaded active running Snap Daemon
+  ssh.service                 loaded active running OpenBSD Secure Shell server
+  systemd-journald.service    loaded active running Journal Service
+  systemd-logind.service      loaded active running User Login Management
+  systemd-networkd.service    loaded active running Network Configuration
+  systemd-resolved.service    loaded active running Network Name Resolution
+  systemd-timesyncd.service   loaded active running Network Time Synchronization
+  systemd-udevd.service       loaded active running Rule-based Manager for Device Events and Files
+  udisks2.service             loaded active running Disk Manager
+  unattended-upgrades.service loaded active running Unattended Upgrades Shutdown
+  user@0.service              loaded active running User Manager for UID 0
+
+Legend: LOAD   → Reflects whether the unit definition was properly loaded.
+        ACTIVE → The high-level unit activation state, i.e. generalization of SUB.
+        SUB    → The low-level unit activation state, values depend on unit type.
+
+20 loaded units listed.
+
+================================================================================
+SECTION: Installed Packages (Docker/Web/Security)
+COMMAND: dpkg -l | grep -E 'docker|containerd|nginx|apache|caddy|certbot|ufw|fail2ban|cloud-init' || echo 'No matches'
+================================================================================
+[STDOUT]
+ii  cloud-init                      26.1-0ubuntu1~24.04.1                            all          initialization and customization tool for cloud instances
+ii  cloud-initramfs-copymods        0.49~24.04.1                                     all          copy initramfs modules into root filesystem for later use
+ii  cloud-initramfs-dyn-netconf     0.49~24.04.1                                     all          write a network interface file in /run for BOOTIF
+ii  ufw                             0.36.2-6                                         all          program for managing a Netfilter firewall
+
+================================================================================
+SECTION: Active Shell Users
+COMMAND: grep -E 'sh$' /etc/passwd
+================================================================================
+[STDOUT]
+root:x:0:0:root:/root:/bin/bash
+ubuntu:x:1000:1000:Ubuntu:/home/ubuntu:/bin/bash
+
+================================================================================
+SECTION: SSH Active Configuration
+COMMAND: sshd -T | grep -E 'port|permitrootlogin|passwordauthentication|pubkeyauthentication|x11forwarding|maxauthtries|ciphers|macs' || true
+================================================================================
+[STDOUT]
+port 22
+maxauthtries 6
+permitrootlogin yes
+pubkeyauthentication yes
+passwordauthentication yes
+x11forwarding yes
+gatewayports no
+ciphers chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com
+macs umac-64-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-64@openssh.com,umac-128@openssh.com,hmac-sha2-256,hmac-sha2-512,hmac-sha1
+
+================================================================================
+SECTION: Recent Logins
+COMMAND: last -n 5
+================================================================================
+[STDOUT]
+reboot   system boot  6.8.0-139-generi Tue Oct 20 17:13   still running
+
+wtmp begins Tue Oct 20 17:13:39 2026
+

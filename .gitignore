@@ -1,0 +1,23 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.vault_password
+vault_pass*
+
+# Ansible & System temporary
+*.retry
+.cache/
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+
+# OS artifacts
+.DS_Store
+Thumbs.db

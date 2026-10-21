@@ -1,0 +1,39 @@
+{
+  "name": "agent-pm",
+  "version": "1.0.0",
+  "description": "Agent-native, zero-token-waste Project Management & DAG Task Engine for AI pair programmers and human developers.",
+  "main": "src/index.js",
+  "bin": {
+    "agent-pm": "./bin/pm.js",
+    "pm": "./bin/pm.js"
+  },
+  "scripts": {
+    "test": "node tests/pm.test.js",
+    "board": "node bin/pm.js board",
+    "status": "node bin/pm.js status"
+  },
+  "keywords": [
+    "antigravity",
+    "ai-agents",
+    "project-management",
+    "dag",
+    "kanban",
+    "token-efficient",
+    "context-compiler",
+    "llm",
+    "agentic-coding"
+  ],
+  "author": "Alamia Soft",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "bin",
+    "src",
+    "templates",
+    ".agents",
+    "README.md",
+    "LICENSE"
+  ]
+}

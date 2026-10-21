@@ -1,0 +1,20 @@
+name: MyNewProject
+description: Standard Project scaffold managed with Agent-PM protocol
+version: 1.0.0
+
+invariants:
+  - "All PRs and closed tasks must pass automated verification tests"
+  - "Code commits must maintain deterministic tests"
+
+epics:
+  EP-01-core-foundation:
+    title: Core Foundation & Architecture
+    status: active
+    description: Initial system scaffolding, data models, and baseline pipelines.
+
+agent_roles:
+  - lead
+  - backend
+  - frontend
+  - devops
+  - qa

@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "path": "Alamia-Skills-System/vendor/mattpocock-skills/skills/engineering"
+    },
+    {
+      "path": "Alamia-Skills-System/vendor/mattpocock-skills/skills/productivity"
+    },
+    {
+      "path": "Alamia-Skills-System/vendor/agent-pm/.agents/skills/agent-pm"
+    },
+    {
+      "path": "Alamia-Skills-System/skills/dag-task-planning"
+    },
+    {
+      "path": "Alamia-Skills-System/skills/persistent-operational-tooling"
+    }
+  ]
+}
