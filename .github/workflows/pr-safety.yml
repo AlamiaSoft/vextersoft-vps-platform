@@ -55,7 +55,10 @@ jobs:
           git /repo --redact --exit-code 1
 
       - name: Lint Ansible when infrastructure playbooks are present
-        if: hashFiles('ansible/**/*.yml', 'ansible/**/*.yaml') != ''
         run: |
-          python -m pip install --disable-pip-version-check ansible-lint
-          ansible-lint ansible/
+          if find ansible -type f \\( -name '*.yml' -o -name '*.yaml' \\) -print -quit 2>/dev/null | grep -q .; then
+            python -m pip install --disable-pip-version-check ansible-lint
+            ansible-lint ansible/
+          else
+            echo "No Ansible playbooks found; skipping Ansible lint."
+          fi
