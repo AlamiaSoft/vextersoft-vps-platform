@@ -21,6 +21,8 @@ Edited 01-system-architecture.md
 Edited 00-current-state.md
 Edited repository.md
 
+> Historical discovery and initial-host notes. Application names and multi-tenant ideas below are examples from the original exploration, not requirements for the current general-purpose VPS platform. The current scope and exclusions are defined in `project-description.md`.
+
 ### 1. Local Tooling & Control Environment
 
 - **Host OS:** Windows with PowerShell

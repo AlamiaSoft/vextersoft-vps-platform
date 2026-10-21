@@ -1,54 +1,50 @@
-# Project: VexterSoft VPS Platform Bootstrap
-
-Act as a senior Linux infrastructure engineer and DevOps automation engineer.
+# Project: VexterSoft VPS Platform
 
 ## Objective
 
-Prepare a reusable, documented infrastructure baseline for VexterSoft, starting with an already-provisioned Contabo Cloud VPS 6.
+Build a practical, reusable workflow to provision and operate VexterSoft VPS servers from Windows/WSL with Ansible. The automation should work across supported VPS providers when their Ubuntu, network, firewall, and console prerequisites have been verified.
 
-The VPS will initially host:
-- Internal VexterSoft Odoo 20.
-- ZelixVet for Tomken Vet, with separate staging and production environments.
-- A marketing demonstration environment for veterinary clinics and human hospitals.
-- Potential Laravel multi-tenant SaaS applications for restaurant ordering and car rental.
+The starting workflow prepares Ubuntu 24.04 with:
 
-Future clients may receive dedicated VPS instances. The infrastructure automation should eventually support other providers.
+- SSH key access, SSH hardening, firewall defaults, fail2ban, and baseline system settings.
+- Docker Engine and the Docker Compose plugin.
+- Portainer with persistent storage for managing application stacks.
+- Cloudflare Tunnel for private management ingress, with Cloudflare Access and Portainer authentication protecting the management hostname.
+- Explicit public application hostnames that do not inherit the Portainer Access policy.
+- Operator commands, validation, recovery procedures, and post-change verification.
 
-## Working approach
+A server-specific inventory alias, domain, and encrypted tunnel credential should be the only per-server setup normally required. Provider-specific firewall and networking differences must be documented and checked rather than assumed.
 
-1. Inspect the local Windows/WSL environment and available tooling.
-2. Create a Git-managed infrastructure repository.
-3. Connect to the VPS over SSH and inspect its current operating system, architecture, disks, network interfaces, firewall, existing services and SSH configuration.
-4. Document findings before changing the server.
-5. Create idempotent Ansible playbooks for host preparation and security hardening.
-6. Use Docker Engine, Docker Compose, Portainer and Cloudflare Tunnel.
-7. Make Portainer accessible at `devops.vextersoft.com`, protected by Cloudflare Access and Portainer authentication.
-8. Keep client-facing Odoo applications independently accessible to their intended users, without requiring Cloudflare Access for every client.
-9. Ensure PostgreSQL, Docker management ports and other private services are not unintentionally exposed publicly.
-10. Document every operational step, verification command, rollback procedure and recovery path.
+## Application workflow
+
+Portainer stacks are the preferred workflow for deploying and managing applications. The platform should provide safe infrastructure primitives and public/private routing, while application stack definitions remain independent and reusable.
+
+Odoo, ZelixVet, Laravel, or other application deployments may later use this infrastructure, but they do not define this repository's architecture or control plane.
+
+## Explicit exclusions
+
+Do not implement an Odoo-specific hosting control plane, multi-customer lifecycle logic, customer billing, Odoo staging/production orchestration, or customer-facing deployment panel here. Those belong to the separate future VexterSoft Odoo Cloud initiative.
 
 ## Safety requirements
 
-- Do not expose root SSH credentials, private keys, API tokens or other secrets in Git, logs or generated documentation.
-- Do not make destructive changes or apply firewall rules that could lock out the administrator without first validating the recovery path.
-- Do not reinstall the operating system unless inspection establishes a concrete reason and I explicitly approve it.
-- Do not run unreviewed commands that change production infrastructure.
-- Prefer idempotent Ansible tasks over ad hoc shell scripts.
-- Pin important software versions and document upgrade procedures.
-- Separate infrastructure provisioning from application deployment.
-- Keep staging and production databases, filestores, configuration and credentials isolated.
-- Implement independent off-site backup and restore verification before production is considered ready.
-- Request approval before consequential changes to SSH, firewall rules, Docker networking, persistent volumes or externally accessible services.
+- Do not expose SSH private keys, passwords, Cloudflare tokens, or other secrets in Git, terminal output, logs, or generated documentation.
+- Keep SSH strict host-key verification enabled. Never accept unknown host keys automatically.
+- Require explicit operator confirmation before host-changing phases and separate owner approval for sensitive server or Cloudflare changes.
+- Do not expose the Docker API, databases, Portainer, or management ports on public host interfaces.
+- Inspect UFW, Docker forwarding, IPv4/IPv6, provider firewall, and current services before making network changes.
+- Do not reinstall an operating system without a concrete reason and explicit approval.
+- Prefer idempotent Ansible playbooks over undocumented manual server configuration.
+- Pin or deliberately manage image versions, retain Portainer data during routine rollback, and verify backups before restore or volume changes.
 
-## Initial deliverables
+## Provisioning workflow
 
-1. `README.md` with the architecture and setup instructions.
-2. `docs/` with an infrastructure inventory, network design, security checklist and recovery runbook.
-3. Ansible inventory and configuration files with secrets excluded.
-4. Separate playbooks for inspection, baseline hardening, Docker installation, Portainer installation and Cloudflare Tunnel configuration.
-5. A validation checklist that can be run after deployment.
-6. A clear list of manual prerequisites and tasks that still require my approval.
+1. Inspect provider, Ubuntu release, networking, firewall, storage, SSH trust, and local WSL/Ansible tools.
+2. Prepare the local inventory and SSH agent without weakening host-key checks.
+3. Validate inventory and playbook syntax, then prove Ansible ping.
+4. Apply baseline hardening with explicit confirmation and verify SSH, UFW, swap, and fail2ban.
+5. Install Docker Engine and Compose with explicit confirmation, then verify services and container execution.
+6. Configure Cloudflare Tunnel and Access prerequisites, then separately approve ingress deployment.
+7. Deploy application stacks through Portainer with explicit public/private routing.
+8. Verify access policies, host port exposure, persistence, restart behavior, rollback, and recovery.
 
-## First task only
-
-Start with local tooling checks and read-only VPS inspection. Report the findings, proposed changes and any blockers. Do not perform the full bootstrap until I review the plan.
+Do not run several host-changing phases as one unattended operation.
