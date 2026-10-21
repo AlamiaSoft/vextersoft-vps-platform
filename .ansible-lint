@@ -1,0 +1,6 @@
+---
+profile: null
+requirements_file: ansible/requirements.yml
+exclude_paths:
+  - Alamia-Skills-System/
+  - .agents/
