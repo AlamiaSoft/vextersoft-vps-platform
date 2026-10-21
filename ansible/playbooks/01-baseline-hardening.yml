@@ -42,15 +42,47 @@
         mode: "0440"
         validate: "visudo -cf %s"
 
-    - name: Check if swapfile exists
+    # --- Robust, Non-Destructive, Idempotent Swap Handling ---
+    - name: Query active system swap devices
+      ansible.builtin.command:
+        cmd: swapon --show=NAME --noheadings
+      register: active_swaps
+      changed_when: false
+
+    - name: Inspect swapfile state on disk
       ansible.builtin.stat:
         path: "{{ swap_file_path }}"
       register: swap_file_stat
 
+    - name: Detect file type of unactivated swapfile
+      ansible.builtin.command:
+        cmd: "blkid -c /dev/null -s TYPE -o value {{ swap_file_path }}"
+      register: swap_file_type
+      changed_when: false
+      failed_when: false
+      when:
+        - swap_file_stat.stat.exists
+        - swap_file_path not in active_swaps.stdout_lines
+
+    - name: Guard against destructive replacement of non-swap existing file
+      ansible.builtin.fail:
+        msg: >
+          File {{ swap_file_path }} exists (size: {{ swap_file_stat.stat.size }} bytes)
+          but is not recognized as swap type (blkid returned '{{ swap_file_type.stdout | default('') }}').
+          Aborting to avoid destructive replacement of existing data.
+      when:
+        - swap_file_stat.stat.exists
+        - swap_file_path not in active_swaps.stdout_lines
+        - swap_file_stat.stat.size > 0
+        - swap_file_type.stdout != 'swap'
+
     - name: Allocate swapfile
       ansible.builtin.command:
         cmd: "fallocate -l {{ swap_size_gb }}G {{ swap_file_path }}"
-        creates: "{{ swap_file_path }}"
+      when:
+        - swap_file_path not in active_swaps.stdout_lines
+        - not swap_file_stat.stat.exists or swap_file_stat.stat.size == 0
+      changed_when: true
 
     - name: Set secure permissions on swapfile
       ansible.builtin.file:
@@ -62,13 +94,16 @@
     - name: Format swapfile
       ansible.builtin.command:
         cmd: "mkswap {{ swap_file_path }}"
-      when: not swap_file_stat.stat.exists
+      when:
+        - swap_file_path not in active_swaps.stdout_lines
+        - not swap_file_stat.stat.exists or swap_file_stat.stat.size == 0
       changed_when: true
 
     - name: Enable swapfile
       ansible.builtin.command:
         cmd: "swapon {{ swap_file_path }}"
-      when: not swap_file_stat.stat.exists
+      when:
+        - swap_file_path not in active_swaps.stdout_lines
       changed_when: true
 
     - name: Persist swapfile in /etc/fstab
@@ -147,6 +182,7 @@
         mode: "0644"
       notify: Restart fail2ban
 
+    # --- Effective SSH Configuration Hardening & Verification Gate ---
     - name: Configure SSH daemon security hardening
       ansible.builtin.copy:
         dest: /etc/ssh/sshd_config.d/99-hardening.conf
@@ -155,6 +191,7 @@
           PermitRootLogin prohibit-password
           PasswordAuthentication no
           KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
           MaxAuthTries 4
           X11Forwarding no
         owner: root
@@ -162,6 +199,50 @@
         mode: "0644"
         validate: "sshd -t -f %s"
       notify: Reload ssh
+
+    - name: Validate overall SSH daemon syntax
+      ansible.builtin.command:
+        cmd: sshd -t
+      changed_when: false
+
+    - name: Inspect effective SSH configuration for admin user context
+      ansible.builtin.command:
+        cmd: "sshd -T -C user={{ admin_user }},host=127.0.0.1,addr=127.0.0.1"
+      register: sshd_effective_admin
+      changed_when: false
+
+    - name: Inspect global effective SSH configuration
+      ansible.builtin.command:
+        cmd: sshd -T
+      register: sshd_effective_global
+      changed_when: false
+
+    - name: Verify effective PasswordAuthentication is disabled
+      ansible.builtin.assert:
+        that:
+          - "'passwordauthentication no' in sshd_effective_admin.stdout_lines"
+          - "'passwordauthentication no' in sshd_effective_global.stdout_lines"
+        fail_msg: "Effective sshd check failed: PasswordAuthentication is not 'no'."
+
+    - name: Verify effective KbdInteractiveAuthentication is disabled
+      ansible.builtin.assert:
+        that:
+          - "'kbdinteractiveauthentication no' in sshd_effective_admin.stdout_lines"
+          - "'kbdinteractiveauthentication no' in sshd_effective_global.stdout_lines"
+        fail_msg: "Effective sshd check failed: KbdInteractiveAuthentication is not 'no'."
+
+    - name: Verify effective PermitRootLogin prohibits passwords
+      ansible.builtin.assert:
+        that:
+          - "('permitrootlogin prohibit-password' in sshd_effective_global.stdout_lines) or ('permitrootlogin no' in sshd_effective_global.stdout_lines)"
+        fail_msg: "Effective sshd check failed: PermitRootLogin must be prohibit-password or no."
+
+    - name: Verify effective PubkeyAuthentication is enabled
+      ansible.builtin.assert:
+        that:
+          - "'pubkeyauthentication yes' in sshd_effective_admin.stdout_lines"
+          - "'pubkeyauthentication yes' in sshd_effective_global.stdout_lines"
+        fail_msg: "Effective sshd check failed: PubkeyAuthentication is not 'yes'."
 
   handlers:
     - name: Reload sysctl

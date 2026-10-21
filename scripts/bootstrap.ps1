@@ -3,7 +3,8 @@
 param(
     [string]$HostIp,
     [int]$Port = 22,
-    [string]$AdminUser = "vexteradmin"
+    [string]$AdminUser = "vexteradmin",
+    [string]$KnownHosts
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,16 +42,22 @@ $keyPassPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR_
 
 Write-Host "`n[*] Starting Windows bootstrap orchestrator..." -ForegroundColor Cyan
 
-# Set ephemeral environment variables in this sub-process only
-$env:SSH_PASSWORD = $rootPassPlain
+# Set ephemeral environment variables for the sub-process only
+$env:BOOTSTRAP_ROOT_PASSWORD = $rootPassPlain
 if ($keyPassPlain) {
-    $env:SSH_KEY_PASSPHRASE = $keyPassPlain
+    $env:BOOTSTRAP_KEY_PASSPHRASE = $keyPassPlain
 }
 
 try {
-    python -u scripts/bootstrap_admin.py --host $HostIp --port $Port --admin-user $AdminUser
+    $pyArgs = @("scripts/bootstrap_admin.py", "--host", $HostIp, "--port", "$Port", "--admin-user", $AdminUser)
+    if ($KnownHosts) {
+        $pyArgs += @("--known-hosts", $KnownHosts)
+    }
+    python -u @pyArgs
 } finally {
-    # Immediately clear credentials from environment
+    # Immediately clear credentials from environment and memory
+    Remove-Item Env:\BOOTSTRAP_ROOT_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:\BOOTSTRAP_KEY_PASSPHRASE -ErrorAction SilentlyContinue
     Remove-Item Env:\SSH_PASSWORD -ErrorAction SilentlyContinue
     Remove-Item Env:\SSH_KEY_PASSPHRASE -ErrorAction SilentlyContinue
     $rootPassPlain = $null
