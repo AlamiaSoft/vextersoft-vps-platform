@@ -1,0 +1,14 @@
+---
+# Copy this file to host_vars/<inventory-alias>/cloudflare.yml and adjust values.
+cloudflare_management_hostname: devops.example.com
+
+# Public application routes are opt-in. Each application frontend must join
+# its own Docker network named below. Keep databases and management services
+# on separate networks. Add a matching public hostname route in Cloudflare.
+cloudflare_public_routes: []
+# Example:
+# cloudflare_public_routes:
+#   - hostname: app.example.com
+#     network: app_public_frontend
+#     service: web
+#     port: 8080

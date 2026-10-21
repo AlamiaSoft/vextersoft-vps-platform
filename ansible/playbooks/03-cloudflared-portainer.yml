@@ -1,0 +1,452 @@
+---
+- name: Deploy Cloudflare Tunnel and private Portainer management
+  hosts: vps_servers
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    cloudflare_deployment_approved: false
+    cloudflare_management_hostname: devops.vextersoft.com
+    cloudflare_project_dir: /opt/vextersoft/management
+    cloudflare_management_network: vextersoft-management
+    cloudflare_tunnel_egress_network: vextersoft-tunnel-egress
+    cloudflare_portainer_volume: vextersoft_portainer_data
+    cloudflare_portainer_image: portainer/portainer-ce:2.45.1
+    cloudflare_tunnel_image: cloudflare/cloudflared:2026.10.2
+    cloudflare_public_routes: []
+    cloudflare_tunnel_secret_path: "{{ cloudflare_project_dir }}/secrets/tunnel-token"
+
+  pre_tasks:
+    - name: Require explicit approval before any host changes
+      ansible.builtin.assert:
+        that:
+          - cloudflare_deployment_approved | bool
+        fail_msg: >-
+          This playbook changes Docker networks, a persistent volume, and running
+          containers. Review the deployment plan and obtain explicit owner approval
+          before setting cloudflare_deployment_approved=true.
+
+    - name: Require a configured management hostname and vaulted tunnel token
+      ansible.builtin.assert:
+        that:
+          - cloudflare_management_hostname is string
+          - cloudflare_management_hostname is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$')
+          - cloudflare_tunnel_token is defined
+          - cloudflare_tunnel_token is string
+          - cloudflare_tunnel_token | trim | length >= 64
+          - cloudflare_tunnel_token | trim is not search('\s')
+        fail_msg: >-
+          Configure the per-host management hostname and a remotely-managed
+          Cloudflare Tunnel token in the ignored, Ansible Vault-encrypted host_vars
+          file before deployment.
+
+    - name: Validate explicitly configured public application routes
+      ansible.builtin.assert:
+        that:
+          - item is mapping
+          - item.hostname is defined
+          - item.hostname is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$')
+          - item.network is defined
+          - item.network is match('^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$')
+          - item.network not in [cloudflare_management_network, cloudflare_tunnel_egress_network]
+          - item.service is defined
+          - item.service is match('^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$')
+          - item.port is defined
+          - item.port | int >= 1
+          - item.port | int <= 65535
+          - item.hostname != cloudflare_management_hostname
+        fail_msg: >-
+          Each public route must name a public application hostname, its dedicated
+          Docker frontend network, an application service alias, and an origin port.
+          Do not route management or database services through this list.
+      loop: "{{ cloudflare_public_routes }}"
+      loop_control:
+        label: "{{ item.hostname | default('invalid route') }}"
+
+    - name: Verify supported Ubuntu release
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.system == "Linux"
+          - ansible_facts.distribution == "Ubuntu"
+          - ansible_facts.distribution_version == "24.04"
+        fail_msg: >-
+          The current baseline and Docker phases support Ubuntu 24.04. Validate
+          other Ubuntu releases before extending the supported provisioning matrix.
+
+    - name: Inspect Docker daemon health
+      ansible.builtin.command:
+        cmd: docker info --format '{{ "{{" }}.ServerVersion{{ "}}" }}'
+      register: cloudflare_docker_info
+      changed_when: false
+
+    - name: Inspect UFW status and defaults without changing firewall state
+      ansible.builtin.command:
+        cmd: ufw status verbose
+      register: cloudflare_ufw_status
+      changed_when: false
+
+    - name: Require active UFW with the restrictive baseline defaults
+      ansible.builtin.assert:
+        that:
+          - cloudflare_ufw_status.stdout is search('(?im)^Status:\s+active$')
+          - cloudflare_ufw_status.stdout is search('(?i)Default:\s+deny \(incoming\),\s+allow \(outgoing\)')
+        fail_msg: >-
+          UFW is inactive or its incoming/outgoing defaults differ from the
+          expected restrictive baseline. Stop and review the provider firewall;
+          this playbook will not change firewall settings.
+
+    - name: Inspect persistent UFW forwarding and IPv6 defaults
+      ansible.builtin.command:
+        cmd: grep -E '^(DEFAULT_FORWARD_POLICY|IPV6)=' /etc/default/ufw
+      register: cloudflare_ufw_forward_defaults
+      changed_when: false
+
+    - name: Require routed deny and IPv6 firewall support
+      ansible.builtin.assert:
+        that:
+          - cloudflare_ufw_forward_defaults.stdout is search('(?m)^DEFAULT_FORWARD_POLICY="DROP"$')
+          - cloudflare_ufw_forward_defaults.stdout is search('(?m)^IPV6=yes$')
+        fail_msg: >-
+          UFW routed traffic or IPv6 policy is not the restrictive expected
+          configuration. Review UFW and Docker forwarding before deployment.
+
+    - name: Inspect IPv4 Docker forwarding rules
+      ansible.builtin.command:
+        cmd: iptables-save
+      register: cloudflare_iptables_v4
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect IPv6 Docker forwarding rules
+      ansible.builtin.command:
+        cmd: ip6tables-save
+      register: cloudflare_iptables_v6
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect TCP listeners before creating management services
+      ansible.builtin.command:
+        cmd: ss -lnt
+      register: cloudflare_tcp_listeners
+      changed_when: false
+
+    - name: Inspect Docker daemon launch arguments for TCP API configuration # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl show docker --property=ExecStart --value
+      register: cloudflare_docker_execstart
+      changed_when: false
+
+    - name: Inspect Docker daemon config file metadata
+      ansible.builtin.stat:
+        path: /etc/docker/daemon.json
+      register: cloudflare_daemon_config_stat
+
+    - name: Read Docker daemon config without displaying its contents
+      ansible.builtin.slurp:
+        src: /etc/docker/daemon.json
+      register: cloudflare_daemon_config_raw
+      when: cloudflare_daemon_config_stat.stat.exists
+      no_log: true
+
+    - name: Parse Docker daemon configuration without logging it
+      ansible.builtin.set_fact:
+        cloudflare_daemon_config: >-
+          {{
+            (cloudflare_daemon_config_raw.content | b64decode | from_json)
+            if cloudflare_daemon_config_stat.stat.exists
+            else {}
+          }}
+      no_log: true
+
+    - name: Refuse a Docker daemon configuration with TCP API hosts
+      ansible.builtin.assert:
+        that:
+          - cloudflare_daemon_config is mapping
+          - cloudflare_daemon_config.get('hosts', []) is sequence
+          - cloudflare_daemon_config.get('hosts', []) is not string
+          - >-
+            (cloudflare_daemon_config.get('hosts', [])
+            | select('match', '^(tcp|http|https)://')
+            | list
+            | length) == 0
+        fail_msg: >-
+          Docker daemon configuration is invalid or contains a TCP/HTTP API host.
+          Review it manually; this playbook will not change Docker daemon settings.
+
+    - name: Refuse Docker daemon TCP API configuration
+      ansible.builtin.assert:
+        that:
+          - cloudflare_docker_execstart.stdout is not search('(?i)tcp://|tcp-listen')
+        fail_msg: >-
+          Docker's active service command contains a TCP listener. This playbook
+          requires the Unix socket only and will not alter daemon settings.
+
+    - name: Refuse an existing Docker API or management listener on the host
+      ansible.builtin.assert:
+        that:
+          - >-
+            not (cloudflare_tcp_listeners.stdout
+            | regex_search('(?:0\.0\.0\.0|\[::\]|\*):(?:2375|2376|8000|9000|9443)\s'))
+        fail_msg: >-
+          A Docker API or Portainer-related host TCP listener already exists.
+          Inspect it before proceeding; this playbook publishes no host ports.
+
+    - name: Inspect existing Docker project containers
+      ansible.builtin.command:
+        cmd: docker ps --all --filter label=com.docker.compose.project=vextersoft-management --format '{{ "{{" }}.Names{{ "}}" }}'
+      register: cloudflare_existing_project_containers
+      changed_when: false
+
+    - name: Refuse unexpected containers with this Compose project label
+      ansible.builtin.assert:
+        that:
+          - >-
+            cloudflare_existing_project_containers.stdout_lines
+            | difference([
+                'vextersoft-management-portainer-1',
+                'vextersoft-management-cloudflared-1'
+              ])
+            | length == 0
+        fail_msg: >-
+          Unexpected containers already use the vextersoft-management Compose
+          project label. Inspect them before deployment.
+
+    - name: Inspect current Docker port bindings
+      ansible.builtin.command:
+        cmd: docker ps --all --format '{{ "{{" }}.Names{{ "}}" }}|{{ "{{" }}.Ports{{ "}}" }}'
+      register: cloudflare_existing_port_bindings
+      changed_when: false
+
+    - name: Inspect existing Portainer data volume ownership
+      ansible.builtin.command:
+        argv:
+          - docker
+          - volume
+          - inspect
+          - --format
+          - '{{ "{{" }}json .Labels{{ "}}" }}'
+          - "{{ cloudflare_portainer_volume }}"
+      register: cloudflare_existing_data_volume
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse an existing unowned Portainer data volume
+      ansible.builtin.assert:
+        that:
+          - >-
+            cloudflare_existing_data_volume.rc != 0
+            or (
+              (cloudflare_existing_data_volume.stdout | from_json | default({}, true))
+              .get('com.vextersoft.managed-by', '')
+              == 'ansible-cloudflare-portainer'
+            )
+        fail_msg: >-
+          A volume with the configured Portainer data name already exists without
+          the expected automation ownership label. Back it up and inspect it before
+          reusing it.
+
+    - name: Refuse existing Docker API or Portainer port publications
+      ansible.builtin.assert:
+        that:
+          - >-
+            not (cloudflare_existing_port_bindings.stdout
+            | regex_search('(?:0\\.0\\.0\\.0|::|\\[::\\]|127\\.0\\.0\\.1|\\*):(?:2375|2376|8000|9000|9443)->'))
+        fail_msg: >-
+          A container already publishes a Docker API or Portainer management port.
+          Inspect it and its firewall implications before continuing.
+
+    - name: Inspect the management network's current isolation state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - network
+          - inspect
+          - --format
+          - '{{ "{{" }}.Internal{{ "}}" }}'
+          - "{{ cloudflare_management_network }}"
+      register: cloudflare_management_network_inspect
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse a pre-existing non-internal management network
+      ansible.builtin.assert:
+        that:
+          - cloudflare_management_network_inspect.rc != 0 or cloudflare_management_network_inspect.stdout == 'true'
+        fail_msg: >-
+          The configured management Docker network already exists without internal
+          isolation. Review its attached containers before changing it.
+
+    - name: Inspect the tunnel egress network's current isolation state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - network
+          - inspect
+          - --format
+          - '{{ "{{" }}.Internal{{ "}}" }}'
+          - "{{ cloudflare_tunnel_egress_network }}"
+      register: cloudflare_egress_network_inspect
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse a pre-existing isolated tunnel egress network
+      ansible.builtin.assert:
+        that:
+          - cloudflare_egress_network_inspect.rc != 0 or cloudflare_egress_network_inspect.stdout == 'false'
+        fail_msg: >-
+          The configured tunnel egress Docker network is internal and cannot reach
+          Cloudflare. Review its attached containers before changing it.
+
+    - name: Inspect public application networks before deployment
+      ansible.builtin.command:
+        argv:
+          - docker
+          - network
+          - inspect
+          - --format
+          - '{{ "{{" }}.Internal{{ "}}" }}'
+          - "{{ item }}"
+      register: cloudflare_app_networks_inspect
+      changed_when: false
+      failed_when: false
+      loop: "{{ cloudflare_public_routes | map(attribute='network') | unique | list }}"
+
+    - name: Refuse isolated or otherwise conflicting public app networks
+      ansible.builtin.assert:
+        that:
+          - item.rc != 0 or item.stdout == 'false'
+        fail_msg: >-
+          A configured public app network already exists with internal isolation.
+          Review the app stack and network before attaching the tunnel.
+      loop: "{{ cloudflare_app_networks_inspect.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+  tasks:
+    - name: Ensure the management project directory exists
+      ansible.builtin.file:
+        path: "{{ cloudflare_project_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Ensure the restricted tunnel secret directory exists
+      ansible.builtin.file:
+        path: "{{ cloudflare_tunnel_secret_path | dirname }}"
+        state: directory
+        owner: root
+        group: "65532"
+        mode: "0750"
+
+    - name: Install the tunnel token as a root-managed read-only secret file
+      ansible.builtin.copy:
+        dest: "{{ cloudflare_tunnel_secret_path }}"
+        content: "{{ cloudflare_tunnel_token | trim }}\n"
+        owner: root
+        group: "65532"
+        mode: "0440"
+        diff: false
+      no_log: true
+
+    - name: Ensure the isolated management Docker network exists
+      community.docker.docker_network:
+        name: "{{ cloudflare_management_network }}"
+        driver: bridge
+        internal: true
+        state: present
+
+    - name: Ensure the tunnel egress Docker network exists
+      community.docker.docker_network:
+        name: "{{ cloudflare_tunnel_egress_network }}"
+        driver: bridge
+        internal: false
+        state: present
+
+    - name: Ensure one isolated ingress network exists for each public application route
+      community.docker.docker_network:
+        name: "{{ item }}"
+        driver: bridge
+        internal: false
+        state: present
+      loop: "{{ cloudflare_public_routes | map(attribute='network') | unique | list }}"
+
+    - name: Ensure the Portainer data volume exists
+      community.docker.docker_volume:
+        name: "{{ cloudflare_portainer_volume }}"
+        labels:
+          com.vextersoft.managed-by: ansible-cloudflare-portainer
+        state: present
+
+    - name: Render the management Compose project without tunnel credentials
+      ansible.builtin.template:
+        src: "{{ playbook_dir | dirname }}/templates/cloudflared-portainer.compose.yml.j2"
+        dest: "{{ cloudflare_project_dir }}/compose.yml"
+        owner: root
+        group: root
+        mode: "0640"
+        validate: "docker compose -f %s config --quiet"
+
+    - name: Start Cloudflare Tunnel and Portainer with the reviewed Compose project
+      community.docker.docker_compose_v2:
+        project_src: "{{ cloudflare_project_dir }}"
+        project_name: vextersoft-management
+        files:
+          - compose.yml
+        state: present
+        pull: missing
+        wait: true
+        wait_timeout: 180
+      register: cloudflare_compose_result
+
+    - name: Inspect Portainer container health
+      community.docker.docker_container_info:
+        name: vextersoft-management-portainer-1
+      register: cloudflare_portainer_info
+      retries: 12
+      delay: 5
+      until:
+        - cloudflare_portainer_info.exists
+        - cloudflare_portainer_info.container.State.Running | default(false)
+        - cloudflare_portainer_info.container.State.Health.Status | default('') == 'healthy'
+
+    - name: Inspect Cloudflare Tunnel container health
+      community.docker.docker_container_info:
+        name: vextersoft-management-cloudflared-1
+      register: cloudflare_tunnel_info
+      retries: 24
+      delay: 5
+      until:
+        - cloudflare_tunnel_info.exists
+        - cloudflare_tunnel_info.container.State.Running | default(false)
+        - cloudflare_tunnel_info.container.State.Health.Status | default('') == 'healthy'
+
+    - name: Verify no management or Docker API ports were published
+      ansible.builtin.command:
+        cmd: docker ps --format '{{ "{{" }}.Names{{ "}}" }}|{{ "{{" }}.Ports{{ "}}" }}'
+      register: cloudflare_final_port_bindings
+      changed_when: false
+
+    - name: Assert management and Docker API ports remain unpublished
+      ansible.builtin.assert:
+        that:
+          - >-
+            not (cloudflare_final_port_bindings.stdout
+            | regex_search('(?:0\.0\.0\.0|\[::\]|127\.0\.0\.1):(?:2375|2376|8000|9000|9443)->'))
+        fail_msg: >-
+          A management or Docker API port is published on the host. Stop and
+          investigate the Compose project before permitting ingress.
+
+    - name: Verify UFW remains active and unchanged after deployment
+      ansible.builtin.command:
+        cmd: ufw status verbose
+      register: cloudflare_final_ufw_status
+      changed_when: false
+
+    - name: Assert the expected UFW defaults remain in effect
+      ansible.builtin.assert:
+        that:
+          - cloudflare_final_ufw_status.stdout is search('(?im)^Status:\s+active$')
+          - cloudflare_final_ufw_status.stdout is search('(?i)Default:\s+deny \(incoming\),\s+allow \(outgoing\)')
+        fail_msg: "UFW status or defaults changed unexpectedly during deployment."

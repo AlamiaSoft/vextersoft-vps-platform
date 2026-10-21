@@ -1,28 +1,31 @@
 # Sprint Current State
 
 **Last Updated:** 2026-10-21  
-**Current Phase:** Phase 1 - Baseline Hardening (pre-application validation passed)
+**Current Phase:** Local implementation and validation of Cloudflare Tunnel + Portainer automation
 
-## Objectives Completed
-- Installed and reconciled `Alamia-Skills-System` in the project.
-- Verified local tooling on Windows and WSL2 Ubuntu-24.04.
-- Secured local repository hygiene by ignoring secrets (including `.env`, private keys, and vault-pass files).
-- Completed the initial read-only, non-destructive VPS inspection and recorded the infrastructure inventory and original security findings.
-- Completed the Windows bootstrap workflow: admin account/key access and passwordless sudo verified; inventory generated locally; bootstrap reported 9 completed, 1 skipped, and 0 failed steps.
-- Set up WSL SSH access using the existing Windows private key and the matching trusted host-key entry; SSH strict host-key checking and passwordless sudo succeeded.
-- Installed Ansible collections, passed the baseline playbook syntax check, and received Ansible ping `SUCCESS` / `pong`.
-- Added the operator runbook at `docs/operator-runbook-wsl-ansible.md`.
+## Completed and verified phases
 
-## Current Operational State
-- The baseline Ansible playbook has **not yet been applied** as of this update.
-- Passing syntax validation and Ansible ping confirms tooling and access; it is not evidence that SSH hardening, UFW, swap, or fail2ban have been configured.
-- Treat the host's original inspection findings as current until the baseline playbook completes and post-change checks are recorded.
-- Keep host-specific inventory, private keys, credentials, and raw logs out of tracked files.
+- Windows/WSL operator environment and Ansible workflow were established.
+- Baseline hardening was applied and verified on the initial Ubuntu 24.04 VPS.
+- Docker Engine and the Compose plugin were installed through Ansible; the Docker phase completed at `f5c08cb` and was merged to main in commit `7b25538`.
+- The current host uses a restrictive UFW baseline, with SSH as the only inbound allow rule; Docker API and management ports are not intentionally published.
+- The working repository's current main checkout contains unrelated local edits. Keep those edits untouched; ingress work is isolated in branch `agent/issue-6-cloudflare-portainer` in a separate worktree.
 
-## Next Actions
-1. Apply `ansible/playbooks/01-baseline-hardening.yml` from WSL after confirming SSH is on TCP/22 and reviewing the playbook's host-changing effects.
-2. Keep the current session open; after a successful run, test a new SSH session and verify effective SSH directives, UFW status, swap, and fail2ban as specified in `docs/operator-runbook-wsl-ansible.md`.
-3. If any host-changing task fails, stop and inspect the failed task and recap before retrying.
-4. After baseline hardening is verified, proceed to Docker Engine/Compose and Docker log safeguards.
-5. After Docker is verified, deploy Cloudflare Tunnel and Portainer; protect the management hostname with Cloudflare Access plus Portainer authentication.
-6. Deploy app environments only after public-vs-management ingress and database/container isolation have been validated.
+## In progress
+
+- Build the local Cloudflare Tunnel + Portainer Ansible phase, Compose template, per-server secret/config pattern, recovery documentation, and operator commands.
+- Local implementation does not imply a Cloudflare tunnel/DNS/Access policy exists or that containers were deployed.
+- No VPS or Cloudflare account changes are authorized by this local implementation task.
+
+## Next steps
+
+1. Finish local playbook syntax, lint, template rendering, and operator script validation.
+2. Review the diff, commit the local implementation, and hand it off for review.
+3. Owner creates/verifies a remotely managed Cloudflare tunnel, configures the exact management hostname, and places its token in the local Ansible Vault file.
+4. Obtain separate explicit approval for deploying the ingress phase to a named VPS.
+5. Verify the tunnel connector, health checks, absence of public management ports, Access allow/deny behavior, and Portainer login.
+6. Add application hostnames only as explicitly reviewed public routes; leave app deployments in Portainer stacks.
+
+## Scope boundary
+
+This repository automates generic VPS setup and app infrastructure. Odoo Cloud control-plane features, customer billing, multi-customer lifecycle logic, and Odoo staging/production orchestration are excluded and belong in the separate VexterSoft Odoo Cloud initiative.

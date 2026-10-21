@@ -10,6 +10,17 @@
     swap_file_path: "/swapfile"
     ssh_port: 22
 
+  pre_tasks:
+    - name: Require inventory SSH identity and port to match the baseline configuration
+      ansible.builtin.assert:
+        that:
+          - ansible_user is defined
+          - ansible_user == admin_user
+          - ansible_port | default(22) | int == ssh_port | int
+        fail_msg: >-
+          The inventory SSH user/port must explicitly match admin_user and ssh_port.
+          Review the target identity and connectivity before applying baseline changes.
+
   tasks:
     - name: Verify target OS distribution is Ubuntu 24.04
       ansible.builtin.assert:

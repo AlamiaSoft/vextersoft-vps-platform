@@ -1,0 +1,78 @@
+---
+name: vextersoft-management
+
+services:
+  portainer:
+    image: "{{ cloudflare_portainer_image }}"
+    command:
+      - --http-enabled
+      - --health-check
+      - --host
+      - unix:///var/run/docker.sock
+    restart: unless-stopped
+    volumes:
+      - portainer_data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - management
+    healthcheck:
+      test: ["CMD", "/portainer", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+
+  cloudflared:
+    image: "{{ cloudflare_tunnel_image }}"
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --metrics
+      - 127.0.0.1:2000
+      - run
+      - --token-file
+      - /run/secrets/cloudflare_tunnel_token
+    user: "65532:65532"
+    restart: unless-stopped
+    secrets:
+      - cloudflare_tunnel_token
+    networks:
+      - management
+      - tunnel_egress
+{% for route_network in cloudflare_public_routes | map(attribute='network') | unique | list %}
+      - app_{{ loop.index }}
+{% endfor %}
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:2000", "ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+
+secrets:
+  cloudflare_tunnel_token:
+    file: "{{ cloudflare_tunnel_secret_path }}"
+
+volumes:
+  portainer_data:
+    external: true
+    name: "{{ cloudflare_portainer_volume }}"
+
+networks:
+  management:
+    external: true
+    name: "{{ cloudflare_management_network }}"
+  tunnel_egress:
+    external: true
+    name: "{{ cloudflare_tunnel_egress_network }}"
+{% for route_network in cloudflare_public_routes | map(attribute='network') | unique | list %}
+  app_{{ loop.index }}:
+    external: true
+    name: "{{ route_network }}"
+{% endfor %}

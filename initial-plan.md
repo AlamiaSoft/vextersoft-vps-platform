@@ -1,86 +1,34 @@
-Ran check for .env file
-Ran check git status for .env
-Created .gitignore
-Ran verify .env is ignored
-Ran check variable names in .env
-Ran check for paramiko · Exited with code 1
-Ran check pip version
-Ran install paramiko
-Ran create docs directory
-Ran create scripts directory
-Created inspect_vps.py
-Ran run read-only VPS inspection
-Checked task Run read-only VPS inspection
-Analyzed task-132.log:L1-21
-Analyzed vps-inspection-raw.txt:L1-150
-Analyzed vps-inspection-raw.txt:L151-260
-Created infrastructure-inventory.md
-Created security-audit-and-hardening-plan.md
-Writing 01-system-architecture.md
-Edited 01-system-architecture.md
-Edited 00-current-state.md
-Edited repository.md
+# Initial discovery plan
 
-### 1. Local Tooling & Control Environment
+> Historical discovery notes only. This file records the original plan; current scope and operational status are maintained in `project-description.md`, `docs/00-current-state.md`, and the active runbooks.
 
-- **Host OS:** Windows with PowerShell
-- **Native OpenSSH & Git:** Verified (`ssh.exe`, `ssh-keygen.exe`, `git.exe` installed and active)
-- **Local Control Node:** Python 3.12 with `paramiko` for direct scripting; WSL2 with `Ubuntu-24.04` ready for Ansible playbook execution.
-- **Secret Hygiene:** Created [.gitignore](file:///e:/Alamia/vextersoft-vps-platform/.gitignore) to ensure `.env`, SSH private keys, and credential files are strictly barred from git tracking.
+## 1. Local tooling and control environment
 
----
+- **Host OS:** Windows with PowerShell.
+- **Native tools:** OpenSSH, Git, and WSL2 with Ubuntu 24.04 for Ansible execution.
+- **Secret hygiene:** Local environment files, private keys, inventory details, and credentials must remain untracked. Use repository-relative links in tracked documentation.
 
-### 2. Read-Only VPS Inspection Findings
+## 2. Initial read-only VPS inspection
 
-The read-only audit completed without modifying any server configuration. The raw audit outputs are preserved in [docs/vps-inspection-raw.txt](file:///e:/Alamia/vextersoft-vps-platform/docs/vps-inspection-raw.txt), and the full specification is recorded in [docs/infrastructure-inventory.md](file:///e:/Alamia/vextersoft-vps-platform/docs/infrastructure-inventory.md).
+The original read-only audit findings and detailed inventory are documented in:
+- [Raw VPS inspection notes](docs/vps-inspection-raw.txt)
+- [Infrastructure inventory](docs/infrastructure-inventory.md)
+- [System architecture](.ai/permanent/architecture/01-system-architecture.md)
+- [Security audit and hardening plan](docs/security-audit-and-hardening-plan.md)
 
-| Subsystem | Discovered State | Assessment |
-| :--- | :--- | :--- |
-| **Instance & Host** | Contabo Cloud VPS 6 (`vmi3682629`), KVM Hypervisor | Clean, freshly booted installation. |
-| **Compute** | 6 vCPUs (AMD EPYC, 2.0 GHz), 11 GiB RAM (535 MiB used, 11 GiB available) | Ample CPU and RAM for Odoo 20, ZelixVet, and demo workloads. |
-| **Swap** | **0 B** (No swap configured) | ⚠️ **Risk:** Risk of abrupt Linux OOM-killer termination under burst database spikes. |
-| **Storage** | `/dev/sda1` on ext4 (`193 GB` total, only `2.3 GB` used / 2% usage) | Large contiguous storage partition available for Docker volumes and PostgreSQL filestores. |
-| **Operating System** | Ubuntu 24.04.5 LTS (Noble Numbat), Kernel `6.8.0-139-generic x86_64` | Modern LTS baseline; fully compatible with Docker Engine and Cloudflare. |
-| **Networking** | Public IPv4: `5.189.128.157/18`, Gateway: `5.189.128.1` on `eth0` | Routing and `systemd-resolved` DNS stub operating normally. |
-| **Firewall (UFW)** | **Status: Inactive** (`iptables` policy is `ACCEPT` on all chains) | ⚠️ **Risk:** Any started daemon or container binding to host ports would be instantly exposed to the public internet. |
-| **SSH Configuration** | Port 22 listening publicly (`PermitRootLogin yes`, `PasswordAuthentication yes`) | ⚠️ **High Risk:** The root account with password login is directly exposed to public internet brute-force scanners. |
-| **Existing Services** | Base systemd units only (`cron`, `cloud-init`, `rsyslog`, `ssh`) | Clean state: zero conflicting web servers, containers, or legacy databases installed. |
+The initial host was a newly provisioned Ubuntu 24.04 VPS. At the time of inspection, the audit flagged missing swap, an inactive firewall, and permissive SSH settings as hardening priorities. These are historical findings and should not be treated as the current live state; use the latest verified status and current runbooks for deployment decisions.
 
----
+## 3. Phased implementation plan
 
-### 3. Proposed Phased Implementation Plan
+1. **Baseline hardening:** create a non-root administrator, verify key-based SSH, harden SSH, configure swap and Fail2ban, and apply a restrictive firewall.
+2. **Docker runtime:** install the official Docker Engine and Compose plugin, configure bounded logging, and verify the runtime.
+3. **Cloudflare Tunnel and Portainer:** deploy the connector, route the management hostname through Cloudflare Access, require Portainer authentication, and verify that management/database ports are not publicly exposed.
 
-The architecture design and safety requirements have been documented in [.ai/permanent/architecture/01-system-architecture.md](file:///e:/Alamia/vextersoft-vps-platform/.ai/permanent/architecture/01-system-architecture.md) and [docs/security-audit-and-hardening-plan.md](file:///e:/Alamia/vextersoft-vps-platform/docs/security-audit-and-hardening-plan.md).
+All host-changing phases require a reviewed plan, explicit approval, and post-change verification.
 
-```
-Phase 1: Safe Baseline Hardening
-   ├── Create non-root admin user (e.g. vexteradmin) with sudo
-   ├── Install authorized SSH key & verify key login on a secondary session
-   ├── Harden SSH (prohibit root password login, enforce pubkey)
-   ├── Configure 4 GB swapfile (swappiness=10)
-   ├── Install & configure fail2ban
-   └── Enable UFW firewall (default DENY incoming, allow SSH only)
+## 4. Configuration and approvals
 
-Phase 2: Docker Engine & Container Runtime
-   ├── Install official Docker Engine (pinned version) & Docker Compose plugin
-   ├── Configure daemon log rotation (max-size, max-file) to prevent disk exhaustion
-   └── Create isolated Docker bridge networks (devops-net, odoo-net, zelixvet-net)
-
-Phase 3: Cloudflare Tunnel & Portainer
-   ├── Deploy cloudflared daemon (zero inbound ports opened on host)
-   ├── Deploy Portainer CE bound only to localhost / internal Docker network
-   ├── Route devops.vextersoft.com -> Portainer (protected by Cloudflare Access)
-   └── Verify internal PostgreSQL/database services have zero public exposure
-```
-
----
-
-### 4. Items Requiring Your Input & Approval Before Proceeding
-
-1. **SSH Administrative Access:**
-   - Would you like me to generate a new dedicated SSH key pair (e.g. `vextersoft_deploy_key`) locally on Windows, or do you have an existing SSH public key you would like installed for the administrative user?
-   - What username do you prefer for the non-root sudoer (e.g., `vexteradmin` or `devops`)?
-2. **Cloudflare Tunnel Token / Credentials:**
-   - When we reach Phase 3, we will need a Cloudflare Tunnel token configured in `.env` (or via Cloudflare Zero Trust dashboard) to bind `devops.vextersoft.com`.
-3. **Approval to Proceed:**
-   - Do you approve proceeding with **Phase 1** (creating the Ansible inventory/playbook for safe non-root user creation, swap setup, UFW, and SSH hardening)?
+- Keep host-specific IPs, gateways, SSH details, and inventory variables in ignored local configuration.
+- Use placeholders in tracked documentation when examples need an address.
+- Store tunnel tokens in an encrypted local Ansible Vault file; do not place credentials in Git or chat.
+- Cloudflare DNS and Access configuration, as well as deployment to a live VPS, require separate review and approval.

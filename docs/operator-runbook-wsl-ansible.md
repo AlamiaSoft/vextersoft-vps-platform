@@ -2,11 +2,45 @@
 
 This runbook covers the operator workflow used to bootstrap a VPS from Windows PowerShell and then run Ansible from WSL2. It deliberately keeps SSH host-key checking enabled.
 
+## Short operator workflow
+
+The repository entry point is `scripts/vextersoft.ps1`. It runs Ansible in the selected WSL distribution, uses the repository's `ansible/ansible.cfg`, checks the inventory host alias, and never disables SSH host-key verification.
+
+From PowerShell at the repository root:
+
+```powershell
+.\scripts\vextersoft.ps1 doctor
+.\scripts\vextersoft.ps1 prepare
+.\scripts\vextersoft.ps1 validate -Phase baseline
+```
+
+Implemented actions:
+
+- `doctor`: read-only checks for repository/inventory, WSL distro, Ansible/collections, SSH agent and the trusted host key.
+- `prepare`: installs the repository Ansible collections locally, safely copies the configured Windows SSH key only if the WSL copy is absent or identical, transfers only the already trusted host-key entry, and loads the key into a persistent WSL SSH agent socket. It does not change the VPS.
+- `validate`: checks playbook syntax and runs Ansible ping against the selected alias using strict host-key checking.
+- `baseline`, `docker`, `ingress`: each requires the explicit `-ApproveHostChange` switch and a typed confirmation phrase after displaying the target. The ingress action also prompts for the Ansible Vault password. Each action validates and pings before applying the corresponding playbook.
+
+Examples:
+
+```powershell
+.\scripts\vextersoft.ps1 validate -Phase ingress
+.\scripts\vextersoft.ps1 baseline -ApproveHostChange
+.\scripts\vextersoft.ps1 docker -ApproveHostChange
+.\scripts\vextersoft.ps1 ingress -ApproveHostChange
+```
+
+The displayed confirmation is an additional operator gate, not a substitute for the repository protocol's owner approval requirement. Do not use host-changing actions until the exact host, playbook effects, recovery path, and owner approval have been reviewed.
+
+A Git worktree does not copy ignored local inventory or host configuration. Before using this entry point in a new worktree, create or securely copy `ansible/inventory/hosts.yml` and the per-host files under `ansible/inventory/host_vars/<inventory-alias>/`. Those files are ignored; keep them out of commits.
+
+The workflow does not silently install Ansible itself. If `doctor` reports that Ansible is missing, use the WSL installation procedure below, then run `prepare`. If the configured Windows key or trusted host-key entry is missing, stop and establish it through the trusted bootstrap/console path; never accept a key automatically.
+
 ## Scope and current state
 
 - The Windows bootstrap script establishes and verifies the `vexteradmin` account, its public key, and passwordless sudo, then writes the local Ansible inventory.
 - Windows OpenSSH and WSL OpenSSH maintain separate home directories, private-key locations, and `known_hosts` files. A successful Windows bootstrap does not automatically make the host trusted in WSL.
-- Passing the Ansible syntax check and receiving `pong` from the Ansible ping module verifies tooling, SSH trust/authentication, and connectivity. It does **not** mean the baseline hardening has been applied.
+- Passing the Ansible syntax check and receiving `pong` from the Ansible ping module verifies tooling, SSH trust/authentication, and connectivity. It does **not** mean a playbook has been applied.
 - Do not commit private keys, raw bootstrap logs, passwords, or credentials to this repository.
 
 ## 1. Run the Windows bootstrap
@@ -47,121 +81,52 @@ ansible-galaxy collection install -r ansible/requirements.yml
 
 ## 3. Make the Windows SSH identity and trusted host key available in WSL
 
-Run these commands in the same WSL user account that will run Ansible. They copy the private key into that user's Linux SSH directory and transfer only the matching, pre-existing host-key entry from Windows' `known_hosts`.
+The operator command handles this transfer after confirming the source key and matching host key exist. It copies no key contents to the terminal. The transfer remains strict: an unknown host key is never accepted, and a conflicting WSL key entry stops preparation.
 
-Set the VPS address without adding angle brackets:
+The key is loaded into a persistent WSL agent socket at `/tmp/vextersoft-ssh/agent.sock`. The passphrase prompt appears in the WSL terminal. Never paste a passphrase into chat or save it in a shell script.
+
+To perform the steps manually, run them in the WSL account that runs Ansible:
 
 ```bash
 VPS_IP="<VPS_IPV4>"
 WINPROFILE=$(wslpath "$(cmd.exe /c echo %USERPROFILE% | tr -d '\r')")
 WINSSH="$WINPROFILE/.ssh"
-
 test -f "$WINSSH/vextersoft_vps"
 test -f "$WINSSH/known_hosts"
 ssh-keygen -F "$VPS_IP" -f "$WINSSH/known_hosts"
-```
-
-**Stop if the private key or matching host-key entry is missing.** Do not replace this step with blindly accepting a key from `ssh-keyscan`. Establish the host key through the trusted bootstrap/console path before proceeding.
-
-If both checks pass:
-
-```bash
 install -d -m 700 ~/.ssh
 cp "$WINSSH/vextersoft_vps" ~/.ssh/vextersoft_vps
 chmod 600 ~/.ssh/vextersoft_vps
-
-touch ~/.ssh/known_hosts
-ssh-keygen -F "$VPS_IP" -f "$WINSSH/known_hosts" \
-  | grep -v '^#' >> ~/.ssh/known_hosts
-sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts
-chmod 600 ~/.ssh/known_hosts
-
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/vextersoft_vps
 ```
 
-Enter the SSH key's passphrase when prompted. The private key stays in the local SSH directory; never paste or commit its contents.
+Stop if the private key or matching host-key entry is missing. Never replace this step with blindly accepting a key from `ssh-keyscan`.
 
-Verify strict host-key checking, admin-key access, and passwordless sudo:
+## 4. Validate before applying a phase
 
-```bash
-ssh -o StrictHostKeyChecking=yes \
-  -o IdentitiesOnly=yes \
-  -i ~/.ssh/vextersoft_vps \
-  "vexteradmin@$VPS_IP" 'sudo -n id -u'
-```
-
-Expected output is `0`. If host-key verification fails, stop and reconcile the trusted key; do not disable host-key checking.
-
-## 4. Validate Ansible before changing the VPS
-
-From the repository root in WSL:
+The repository Ansible configuration keeps `host_key_checking = True`. Run:
 
 ```bash
 export ANSIBLE_CONFIG="$PWD/ansible/ansible.cfg"
-
-ansible-playbook --syntax-check \
-  -i ansible/inventory/hosts.yml \
-  ansible/playbooks/01-baseline-hardening.yml
-
+ansible-playbook --syntax-check -i ansible/inventory/hosts.yml ansible/playbooks/01-baseline-hardening.yml
 ansible -i ansible/inventory/hosts.yml vps_servers -m ping
 ```
 
-Required results:
+Syntax validation and `pong` confirm the local playbook parser, inventory, SSH trust/authentication, and connectivity. They do not confirm that server configuration changed.
 
-- The syntax check completes successfully.
-- Ansible reports `SUCCESS` and `ping: pong`.
-- The configured inventory resolves the intended VPS and the intended admin user.
+## 5. Run host-changing phases
 
-The repository Ansible configuration intentionally keeps `host_key_checking = True`.
+The PowerShell operator prints the target, requires `-ApproveHostChange`, then asks for a typed confirmation phrase before execution. It stops after any failed validation or verification. Manual commands must follow the same approval and verification gate.
 
-## 5. Apply baseline hardening only after validation
+The baseline playbook configures the secure Ubuntu baseline. The Docker phase installs Docker Engine and Compose. The ingress phase installs Cloudflare Tunnel and Portainer. The ingress playbook defaults its extra approval flag to false, does not change UFW, and publishes no host ports.
 
-The baseline playbook changes host state: it configures a 4 GiB swapfile, installs baseline security utilities, configures UFW to deny unsolicited inbound traffic while allowing SSH on TCP/22, configures fail2ban, and hardens SSH authentication. Review the playbook and confirm the server uses SSH port 22 before running it.
+Use `docs/cloudflare-portainer-runbook.md` for Cloudflare token setup, DNS/Access configuration, ingress deployment, verification, rollback, and recovery. Cloudflare account changes and VPS deployment require separate approval; neither is run by `doctor`, `prepare`, or `validate`.
 
-Keep the current terminal open and run:
+## 6. Continue the deployment in dependency order
 
-```bash
-ansible-playbook --diff \
-  -i ansible/inventory/hosts.yml \
-  ansible/playbooks/01-baseline-hardening.yml
-```
+1. Baseline hardening, followed by a new SSH connection and checks for SSH directives, UFW, swap, and fail2ban.
+2. Docker Engine and Compose, followed by Docker/containerd health and disposable container verification.
+3. Cloudflare Tunnel and Portainer, after the Cloudflare hostname, Access policy, token, and egress prerequisites are ready.
+4. Applications through Portainer stacks. Keep public web frontends separate from their databases; only explicitly approved app frontends should join tunnel ingress networks.
+5. Read-only acceptance and recovery checks for host ports, tunnel status, Access behavior, persistent data, and backups.
 
-If the run fails, especially during UFW or SSH tasks, stop and inspect the failed task and recap before retrying. Do not blindly rerun or manually change SSH settings. The playbook currently allows TCP/22 only under its baseline UFW rules; any future public service ports must be planned deliberately, and app ingress is intended to use Cloudflare Tunnel rather than publicly exposing management or database ports.
-
-## 6. Verify the hardened server
-
-Only after the playbook finishes successfully, use a **new terminal/session** to prove admin key access still works. Do not close the original session until the new login succeeds.
-
-Then check the effective SSH settings, firewall, swap, and fail2ban:
-
-```bash
-ssh -o StrictHostKeyChecking=yes \
-  -o IdentitiesOnly=yes \
-  -i ~/.ssh/vextersoft_vps \
-  "vexteradmin@$VPS_IP" 'sudo -n id -u'
-
-ansible -i ansible/inventory/hosts.yml vps_servers -m command -a "ufw status verbose"
-ansible -i ansible/inventory/hosts.yml vps_servers -m command -a "swapon --show"
-ansible -i ansible/inventory/hosts.yml vps_servers -m command -a "systemctl is-active fail2ban"
-ansible -i ansible/inventory/hosts.yml vps_servers -m shell -a "sshd -T -C user=vexteradmin,host=127.0.0.1,addr=127.0.0.1 | grep -E '^(passwordauthentication|permitrootlogin|kbdinteractiveauthentication|pubkeyauthentication) '"
-```
-
-Confirm these effective SSH values are present:
-
-- `passwordauthentication no`
-- `permitrootlogin prohibit-password` (or the stricter `permitrootlogin no`)
-- `kbdinteractiveauthentication no`
-- `pubkeyauthentication yes`
-
-Also confirm UFW is active, SSH remains allowed on TCP/22, swap is active, and fail2ban reports `active`. Record the actual outputs in the deployment notes; do not claim hardening is complete until these checks pass.
-
-## 7. Continue the deployment in dependency order
-
-1. **Baseline hardening:** finish the playbook and verify every check in Section 6.
-2. **Docker Engine and Compose:** install using the repository's container-runtime task/specification; set Docker log rotation and required networks. Be careful: Docker-published ports can bypass assumptions about UFW rules, so do not publish database or management ports publicly.
-3. **Cloudflare Tunnel and Portainer:** deploy the tunnel and Portainer only after Docker is verified. Protect `devops.vextersoft.com` with Cloudflare Access and Portainer's own authentication.
-4. **Application environments:** deploy Odoo, ZelixVet staging/production, and demos only after the ingress and isolation model is tested. Public customer application hostnames must not inherit the Cloudflare Access wall intended for the management UI.
-5. **Read-only acceptance and recovery checks:** verify host port exposure, tunnel routes, management protection, database isolation, persistent volumes, restart behavior, backups, and documented recovery steps.
-
-Complete one host-changing phase at a time and validate it before moving to the next.
+Complete one host-changing phase at a time and verify it before moving to the next.
