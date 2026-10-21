@@ -68,6 +68,14 @@ def add_comment(issue_num, comment_body):
 def update_issue(issue_num, update_dict):
     return api_request(f"issues/{issue_num}", data=update_dict, method="PATCH")
 
+def create_pull_request(title, body, head, base="main"):
+    return api_request("pulls", data={
+        "title": title,
+        "body": body,
+        "head": head,
+        "base": base
+    }, method="POST")
+
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -98,5 +106,14 @@ if __name__ == "__main__":
             body = arg
         res = add_comment(issue_num, body)
         print(f"Comment added to #{issue_num}: {res.get('html_url')}")
+    elif cmd == "pr":
+        title = sys.argv[2]
+        head_branch = sys.argv[3]
+        body = sys.argv[4] if len(sys.argv) > 4 else ""
+        if os.path.isfile(body):
+            with open(body, "r", encoding="utf-8") as f:
+                body = f.read()
+        res = create_pull_request(title, body, head_branch)
+        print(f"Pull Request created: {res.get('html_url')} (#{res.get('number')})")
     else:
         print(f"Unknown command: {cmd}")
