@@ -1,0 +1,342 @@
+---
+- name: Install Docker Engine and Compose with storage safeguards
+  hosts: vps_servers
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+
+  vars:
+    docker_admin_user: vexteradmin
+    docker_engine_version: "5:29.9.2-1~ubuntu.24.04~noble"
+    docker_containerd_version: "2.4.2-3~ubuntu.24.04~noble"
+    docker_buildx_version: "0.38.1-1~ubuntu.24.04~noble"
+    docker_compose_version: "5.6.1-1~ubuntu.24.04~noble"
+    docker_apt_key_url: https://download.docker.com/linux/ubuntu/gpg
+    docker_journald_config_path: /etc/systemd/journald.conf.d/90-vextersoft-storage.conf
+    docker_log_max_size: 20m
+    docker_log_max_file: "5"
+    docker_journal_max_use: 1G
+    docker_architecture_map:
+      x86_64: amd64
+      aarch64: arm64
+      armv7l: armhf
+      ppc64le: ppc64el
+      s390x: s390x
+    docker_apt_arch: "{{ docker_architecture_map[ansible_facts.architecture] }}"
+    docker_conflicting_packages:
+      - docker.io
+      - docker-compose
+      - docker-compose-v2
+      - docker-doc
+      - docker-buildx
+      - podman-docker
+      - containerd
+      - runc
+
+  pre_tasks:
+    - name: Verify supported Ubuntu release and Docker package architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == "Ubuntu"
+          - ansible_facts.distribution_version == "24.04"
+          - ansible_facts.distribution_release == "noble"
+          - ansible_facts.architecture in docker_architecture_map
+        fail_msg: >-
+          This playbook only supports Ubuntu 24.04 Noble on an architecture
+          published by Docker's official Ubuntu repository.
+
+    - name: Verify the existing administrative account
+      ansible.builtin.command:
+        cmd: "getent passwd {{ docker_admin_user }}"
+      changed_when: false
+
+    - name: Collect installed package facts before making changes
+      ansible.builtin.package_facts:
+        manager: apt
+
+    - name: Refuse to remove or replace conflicting container packages
+      ansible.builtin.assert:
+        that:
+          - >-
+            (docker_conflicting_packages
+            | intersect(ansible_facts.packages.keys() | list)
+            | length) == 0
+        fail_msg: >-
+          Conflicting distribution container packages are installed. This playbook
+          will not remove or replace them automatically; review the host first.
+
+    - name: Inspect existing Docker daemon configuration
+      ansible.builtin.stat:
+        path: /etc/docker/daemon.json
+      register: docker_daemon_config_stat
+
+    - name: Read existing Docker daemon configuration without logging its contents
+      ansible.builtin.slurp:
+        src: /etc/docker/daemon.json
+      register: docker_daemon_config_raw
+      when: docker_daemon_config_stat.stat.exists
+      no_log: true
+
+    - name: Preserve existing Docker daemon settings for a safe merge
+      ansible.builtin.set_fact:
+        docker_daemon_existing_config: >-
+          {{
+            (docker_daemon_config_raw.content | b64decode | from_json)
+            if docker_daemon_config_stat.stat.exists
+            else {}
+          }}
+      no_log: true
+
+    - name: Verify existing Docker daemon settings are valid and not network-exposed
+      ansible.builtin.assert:
+        that:
+          - docker_daemon_existing_config is mapping
+          - >-
+            docker_daemon_existing_config.get('hosts', []) is sequence
+            and docker_daemon_existing_config.get('hosts', []) is not string
+          - >-
+            (docker_daemon_existing_config.get('hosts', [])
+            | select('match', '^(tcp|http|https)://')
+            | list
+            | length) == 0
+        fail_msg: >-
+          Existing Docker daemon configuration is invalid or defines a network
+          listener. This playbook will stop rather than overwrite or expose it.
+
+  tasks:
+    - name: Ensure Docker repository prerequisites are installed
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure the APT keyring directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Configure Docker's official Ubuntu APT repository and signing key
+      ansible.builtin.deb822_repository:
+        name: docker
+        types:
+          - deb
+        uris:
+          - https://download.docker.com/linux/ubuntu
+        suites:
+          - "{{ ansible_facts.distribution_release }}"
+        components:
+          - stable
+        architectures:
+          - "{{ docker_apt_arch }}"
+        signed_by: "{{ docker_apt_key_url }}"
+        install_python_debian: true
+        enabled: true
+        state: present
+
+    - name: Refresh APT metadata after adding Docker's repository
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Install pinned Docker Engine, containerd, Buildx, and Compose packages
+      ansible.builtin.apt:
+        name:
+          - "docker-ce={{ docker_engine_version }}"
+          - "docker-ce-cli={{ docker_engine_version }}"
+          - "containerd.io={{ docker_containerd_version }}"
+          - "docker-buildx-plugin={{ docker_buildx_version }}"
+          - "docker-compose-plugin={{ docker_compose_version }}"
+        state: present
+        update_cache: true
+        allow_downgrade: false
+        lock_timeout: 300
+
+    - name: Ensure containerd is enabled and running
+      ansible.builtin.systemd_service:
+        name: containerd
+        enabled: true
+        state: started
+    - name: Ensure the Docker group exists
+      ansible.builtin.group:
+        name: docker
+        state: present
+
+    - name: Grant the administrative account Docker socket access
+      ansible.builtin.user:
+        name: "{{ docker_admin_user }}"
+        groups:
+          - docker
+        append: true
+        state: present
+
+    - name: Ensure Docker configuration directory exists
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Build merged Docker daemon configuration with bounded container logs
+      ansible.builtin.set_fact:
+        docker_daemon_managed_config: >-
+          {{
+            docker_daemon_existing_config
+            | combine(
+                {
+                  'log-driver': 'json-file',
+                  'log-opts': {
+                    'max-size': docker_log_max_size,
+                    'max-file': docker_log_max_file
+                  }
+                },
+                recursive=true
+              )
+          }}
+      no_log: true
+
+    - name: Configure Docker's default log rotation without dropping other daemon settings
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: "{{ docker_daemon_managed_config | to_nice_json }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+        validate: "dockerd --validate --config-file %s"
+      notify: Restart Docker
+
+    - name: Ensure journald configuration directory exists
+      ansible.builtin.file:
+        path: /etc/systemd/journald.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Cap systemd journal disk usage
+      ansible.builtin.copy:
+        dest: "{{ docker_journald_config_path }}"
+        content: |
+          [Journal]
+          SystemMaxUse={{ docker_journal_max_use }}
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart systemd-journald
+
+    - name: Ensure Docker is enabled and running
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+      register: docker_service_state
+
+    - name: Apply Docker and journald configuration before verification
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify Docker Engine and Compose CLI respond
+      ansible.builtin.command:
+        cmd: "{{ item }}"
+      loop:
+        - docker --version
+        - docker compose version
+      register: docker_cli_versions
+      changed_when: false
+
+    - name: Check whether the disposable verification image is already cached
+      ansible.builtin.command:
+        cmd: docker image inspect hello-world
+      register: docker_hello_world_image
+      changed_when: false
+      failed_when: false
+
+    - name: Run a disposable image to verify container execution and registry egress
+      ansible.builtin.command:
+        cmd: docker run --rm --pull=missing hello-world
+      register: docker_hello_world
+      changed_when: docker_hello_world_image.rc != 0
+    - name: Verify Docker's active default logging driver
+      ansible.builtin.command:
+        cmd: "docker info --format {{ '{{' }}.LoggingDriver{{ '}}' }}"
+      register: docker_logging_driver
+      changed_when: false
+
+    - name: Read final Docker daemon settings without logging their contents
+      ansible.builtin.slurp:
+        src: /etc/docker/daemon.json
+      register: docker_daemon_verified_raw
+      no_log: true
+
+    - name: Parse final Docker daemon settings
+      ansible.builtin.set_fact:
+        docker_daemon_verified_config: "{{ docker_daemon_verified_raw.content | b64decode | from_json }}"
+      no_log: true
+    - name: Verify pinned Docker package versions and required runtime state
+      ansible.builtin.package_facts:
+        manager: apt
+
+    - name: Verify Docker group membership for the administrative account
+      ansible.builtin.command:
+        cmd: getent group docker
+      register: docker_group_members
+      changed_when: false
+
+    - name: Inspect effective Docker service command for TCP listeners # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl show docker --property=ExecStart --value
+      register: docker_service_command
+      changed_when: false
+
+    - name: Inspect TCP listeners for Docker API ports
+      ansible.builtin.command:
+        cmd: ss -lnt
+      register: docker_tcp_listeners
+      changed_when: false
+
+    - name: Verify the journald storage cap is configured and active
+      ansible.builtin.command:
+        cmd: "grep -Fx 'SystemMaxUse={{ docker_journal_max_use }}' {{ docker_journald_config_path }}"
+      register: journald_cap
+      changed_when: false
+
+    - name: Verify Docker daemon, logging, group, and service postconditions
+      ansible.builtin.assert:
+        that:
+          - docker_service_state.status.ActiveState == "active"
+          - docker_service_state.status.UnitFileState == "enabled"
+          - docker_hello_world.rc == 0
+          - "'Hello from Docker!' in docker_hello_world.stdout"
+          - docker_logging_driver.stdout == "json-file"
+          - docker_daemon_verified_config.get('log-driver', '') == 'json-file'
+          - docker_daemon_verified_config.get('log-opts', {}).get('max-size', '') == docker_log_max_size
+          - docker_daemon_verified_config.get('log-opts', {}).get('max-file', '') == docker_log_max_file
+          - "(ansible_facts.packages.get('docker-ce', []) | map(attribute='version') | list) == [docker_engine_version]"
+          - "(ansible_facts.packages.get('docker-ce-cli', []) | map(attribute='version') | list) == [docker_engine_version]"
+          - "(ansible_facts.packages.get('containerd.io', []) | map(attribute='version') | list) == [docker_containerd_version]"
+          - "(ansible_facts.packages.get('docker-buildx-plugin', []) | map(attribute='version') | list) == [docker_buildx_version]"
+          - "(ansible_facts.packages.get('docker-compose-plugin', []) | map(attribute='version') | list) == [docker_compose_version]"
+          - docker_admin_user in docker_group_members.stdout.split(':')[-1].split(',')
+          - "'tcp://' not in docker_service_command.stdout"
+          - "':2375' not in docker_tcp_listeners.stdout"
+          - "':2376' not in docker_tcp_listeners.stdout"
+          - journald_cap.rc == 0
+        fail_msg: >-
+          Docker post-deployment verification failed. Review service state,
+          package versions, log rotation, Docker group membership, TCP exposure,
+          and journald before proceeding.
+
+  handlers:
+    - name: Restart Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        state: restarted
+
+    - name: Restart systemd-journald
+      ansible.builtin.systemd_service:
+        name: systemd-journald
+        state: restarted
