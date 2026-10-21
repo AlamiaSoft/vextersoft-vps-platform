@@ -56,7 +56,7 @@ jobs:
 
       - name: Lint Ansible when infrastructure playbooks are present
         run: |
-          if find ansible -type f \\( -name '*.yml' -o -name '*.yaml' \\) -print -quit 2>/dev/null | grep -q .; then
+          if find ansible -type f -name '*.y*ml' -print -quit 2>/dev/null | grep -q .; then
             python -m pip install --disable-pip-version-check ansible-lint
             ansible-lint ansible/
           else
