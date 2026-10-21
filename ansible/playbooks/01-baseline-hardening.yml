@@ -14,8 +14,8 @@
     - name: Verify target OS distribution is Ubuntu 24.04
       ansible.builtin.assert:
         that:
-          - ansible_distribution == "Ubuntu"
-          - ansible_distribution_major_version | int == 24
+          - ansible_facts["distribution"] == "Ubuntu"
+          - ansible_facts["distribution_major_version"] | int == 24
         fail_msg: "This baseline playbook is validated specifically for Ubuntu 24.04 LTS."
 
     - name: Ensure administrative group exists
@@ -183,9 +183,10 @@
       notify: Restart fail2ban
 
     # --- Effective SSH Configuration Hardening & Verification Gate ---
+    # OpenSSH uses the first value read; load this before cloud-init drop-ins.
     - name: Configure SSH daemon security hardening
       ansible.builtin.copy:
-        dest: /etc/ssh/sshd_config.d/99-hardening.conf
+        dest: /etc/ssh/sshd_config.d/00-vextersoft-hardening.conf
         content: |
           # VexterSoft SSH Hardening
           PermitRootLogin prohibit-password
@@ -198,6 +199,12 @@
         group: root
         mode: "0644"
         validate: "sshd -t -f %s"
+      notify: Reload ssh
+
+    - name: Remove obsolete late-loading VexterSoft SSH hardening drop-in
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/99-hardening.conf
+        state: absent
       notify: Reload ssh
 
     - name: Validate overall SSH daemon syntax
