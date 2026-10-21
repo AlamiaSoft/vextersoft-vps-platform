@@ -72,7 +72,9 @@ class CommandTimeoutError(RuntimeError):
 
 class SSHTransportError(RuntimeError):
     """Raised when an SSH transport or session failure occurs before or during command execution."""
-    pass
+    def __init__(self, message: str, submitted: bool = False):
+        super().__init__(message)
+        self.submitted = submitted
 
 
 @dataclass
@@ -557,18 +559,18 @@ def execute_remote_cmd(
         err_msg = f"Transport failure opening SSH session before command submission: {e}"
         if logger and step_id:
             logger.log_step_failed(step_id, dur, err_msg)
-        raise SSHTransportError(err_msg) from e
+        raise SSHTransportError(err_msg, submitted=False) from e
 
     # Phase 2: Submit command over channel
     try:
         channel.exec_command(cmd)
     except Exception as e:
         dur = time.monotonic() - start_time
-        err_msg = f"Failed to submit command over channel: {e}"
+        err_msg = f"Transport failure during or after command submission: {e}"
         if logger and step_id:
             logger.log_step_failed(step_id, dur, err_msg)
         channel.close()
-        raise SSHTransportError(err_msg) from e
+        raise SSHTransportError(err_msg, submitted=True) from e
 
     # Phase 3: Drain stdout/stderr without deadlocks
     stdout_chunks: list[bytes] = []
@@ -944,47 +946,98 @@ def main() -> int:
             raise RuntimeError(f"Dual-session authentication failed: {e}")
 
         # Step B-08: Verify passwordless sudo
+        logger.log_step_start("B-08", command_preview="sudo -n id -u")
+        b08_start = time.monotonic()
         rc, out, err = execute_remote_cmd(
             test_client,
             "sudo -n id -u",
             timeout=args.command_timeout,
-            step_id="B-08",
-            logger=logger,
-            command_preview="sudo -n id -u",
         )
-        if rc != 0 or out != "0":
+        b08_dur = time.monotonic() - b08_start
+        if rc == 0 and out == "0":
+            sudo_verified = True
+            logger.log_step_success(
+                "B-08",
+                b08_dur,
+                message="Verified passwordless sudo (UID 0)",
+                stdout_summary=out,
+            )
+        else:
             test_client.close()
-            raise RuntimeError(f"Dual-session sudo verification failed (exit: {rc}, out: '{out}', err: '{err}')")
-
-        sudo_verified = True
+            err_msg = f"Dual-session sudo verification failed (exit: {rc}, out: '{out}', err: '{err}')"
+            logger.log_step_failed(
+                "B-08",
+                b08_dur,
+                error_msg=err_msg,
+                stdout_summary=out or None,
+                stderr_summary=err or None,
+            )
+            raise RuntimeError(err_msg)
 
         # Step B-09: Inspect effective sshd configuration (single cohesive step with fallback)
         logger.log_step_start("B-09", command_preview=f"sudo sshd -T -C user={admin_user}")
         b09_start = time.monotonic()
 
+        ctx_cmd = f"sudo sshd -T -C user={shlex.quote(admin_user)},host=127.0.0.1,addr=127.0.0.1"
+        logger.log("INFO", f"Executing contextual diagnostic: {ctx_cmd}", step_id="B-09")
         rc, out, err = execute_remote_cmd(
             test_client,
-            f"sudo sshd -T -C user={shlex.quote(admin_user)},host=127.0.0.1,addr=127.0.0.1",
+            ctx_cmd,
             timeout=args.command_timeout,
         )
-        if rc != 0:
-            logger.log("WARN", f"Context sshd -T failed (exit: {rc}); attempting general fallback 'sudo sshd -T'...", step_id="B-09")
-            rc, out, err = execute_remote_cmd(
-                test_client,
-                "sudo sshd -T",
-                timeout=args.command_timeout,
-            )
+        out_sum = (out[:200] + "...") if len(out) > 200 else out
+        err_sum = (err[:200] + "...") if len(err) > 200 else err
 
-        b09_dur = time.monotonic() - b09_start
         if rc == 0:
+            logger.log("INFO", f"Contextual sshd -T succeeded (exit: 0) | Stdout: {out_sum}", step_id="B-09")
             sshd_t_executed = True
             effective_cfg = parse_sshd_config_t(out)
             ssh_directives = evaluate_ssh_directives_status(effective_cfg, diagnostic_available=True)
-            logger.log_step_success("B-09", b09_dur, message="Effective sshd configuration inspected via sshd -T")
+            logger.log_step_success(
+                "B-09",
+                time.monotonic() - b09_start,
+                message="Effective sshd inspected via contextual diagnostic",
+                stdout_summary=out_sum,
+            )
         else:
-            sshd_t_executed = False
-            ssh_directives = evaluate_ssh_directives_status({}, diagnostic_available=False)
-            logger.log_step_failed("B-09", b09_dur, error_msg=f"All sshd -T diagnostic attempts failed (exit: {rc}, err: {err})")
+            logger.log(
+                "WARN",
+                f"Contextual sshd -T failed (exit: {rc}, err: {err_sum}); attempting fallback: sudo sshd -T",
+                step_id="B-09",
+            )
+            fb_cmd = "sudo sshd -T"
+            logger.log("INFO", f"Executing fallback diagnostic: {fb_cmd}", step_id="B-09")
+            rc_fb, out_fb, err_fb = execute_remote_cmd(
+                test_client,
+                fb_cmd,
+                timeout=args.command_timeout,
+            )
+            out_fb_sum = (out_fb[:200] + "...") if len(out_fb) > 200 else out_fb
+            err_fb_sum = (err_fb[:200] + "...") if len(err_fb) > 200 else err_fb
+            b09_dur = time.monotonic() - b09_start
+
+            if rc_fb == 0:
+                logger.log("INFO", f"Fallback sshd -T succeeded (exit: 0) | Stdout: {out_fb_sum}", step_id="B-09")
+                sshd_t_executed = True
+                effective_cfg = parse_sshd_config_t(out_fb)
+                ssh_directives = evaluate_ssh_directives_status(effective_cfg, diagnostic_available=True)
+                logger.log_step_success(
+                    "B-09",
+                    b09_dur,
+                    message="Effective sshd inspected via general fallback (sudo sshd -T)",
+                    stdout_summary=out_fb_sum,
+                )
+            else:
+                logger.log("ERROR", f"Fallback sshd -T failed (exit: {rc_fb}, err: {err_fb_sum})", step_id="B-09")
+                sshd_t_executed = False
+                ssh_directives = evaluate_ssh_directives_status({}, diagnostic_available=False)
+                logger.log_step_failed(
+                    "B-09",
+                    b09_dur,
+                    error_msg=f"All sshd -T diagnostic attempts failed (ctx exit: {rc}, fallback exit: {rc_fb})",
+                    stdout_summary=out_fb_sum or out_sum,
+                    stderr_summary=err_fb_sum or err_sum,
+                )
 
         test_client.close()
 
@@ -1061,12 +1114,22 @@ all:
             "A command timed out and remote state is indeterminate."
         )
     except SSHTransportError as e:
-        logger.log("ERROR", f"CONNECTION/TRANSPORT FAILURE: {e}")
         exit_code = 1
-        next_action = (
-            "Check VPS network connectivity, firewall, or SSH service status. "
-            "Do not rerun mutations blindly without verifying remote host state."
-        )
+        if e.submitted:
+            mutation_outcome_unknown = True
+            logger.log("ERROR", f"TRANSPORT FAILURE DURING/AFTER COMMAND SUBMISSION: {e}")
+            next_action = (
+                "Transport failure occurred during or after command submission. "
+                "Remote outcome is UNCERTAIN (the command may have started on the host). "
+                "Do NOT blindly retry mutations; verify VPS state manually before taking further action."
+            )
+        else:
+            logger.log("ERROR", f"TRANSPORT FAILURE BEFORE COMMAND SUBMISSION: {e}")
+            next_action = (
+                "Transport failure occurred before command submission (session open failed). "
+                "No command was transmitted for the failing step. "
+                "Check VPS network connectivity, firewall, or SSH service status."
+            )
     except Exception as e:
         logger.log("ERROR", f"FATAL ERROR: {e}")
         exit_code = 1
