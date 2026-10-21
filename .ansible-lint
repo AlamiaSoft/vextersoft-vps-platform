@@ -1,0 +1,5 @@
+---
+profile: null
+exclude_paths:
+  - Alamia-Skills-System/
+  - .agents/

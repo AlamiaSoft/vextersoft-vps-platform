@@ -1,0 +1,17 @@
+---
+# Example Ansible Inventory for VexterSoft Platform
+# Copy this file to ansible/inventory/hosts.yml (which is ignored by .gitignore)
+# and replace <TARGET_HOST_IP> with the actual VPS IP address.
+
+all:
+  hosts:
+    vextersoft_vps:
+      ansible_host: "<TARGET_HOST_IP>"
+      ansible_user: "vexteradmin"
+      ansible_port: 22
+      ansible_ssh_private_key_file: "~/.ssh/vextersoft_vps"
+      ansible_python_interpreter: "/usr/bin/python3"
+  children:
+    vps_servers:
+      hosts:
+        vextersoft_vps:
