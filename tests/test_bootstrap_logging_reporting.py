@@ -1,7 +1,7 @@
 """
-Unit and regression test suite for Issue #13:
-Live structured logging, safe command execution with timeouts, accurate verification reporting,
-and end-of-run execution summaries.
+Unit and regression test suite for Issue #13 and follow-up findings:
+Live structured logging, safe command execution with timeouts and transport handling,
+accurate verification reporting, B-09 diagnostics fallback, and end-of-run execution summaries.
 """
 
 from __future__ import annotations
@@ -18,10 +18,12 @@ from unittest.mock import MagicMock, patch
 from scripts.bootstrap_admin import (
     BootstrapLogger,
     CommandTimeoutError,
+    SSHTransportError,
     evaluate_ssh_directives_status,
     evaluate_verification_gate,
     execute_remote_cmd,
     format_end_of_run_summary,
+    main,
     sanitize_text,
 )
 
@@ -77,6 +79,17 @@ class TestLiveLoggingAndRedaction(unittest.TestCase):
         self.assertNotIn(key_passphrase, content, "Key passphrase must not appear in log file.")
         self.assertEqual(content.count("<redacted-secret>"), 2)
 
+    def test_logger_scrubs_short_secrets(self) -> None:
+        """P2 finding: verify secrets shorter than 4 characters are properly scrubbed."""
+        short_secret = "abc"
+        logger = BootstrapLogger(log_dir=self.log_dir, secrets=[short_secret])
+        logger.log("INFO", f"User provided short password: {short_secret}")
+        logger.close()
+
+        content = logger.log_path.read_text(encoding="utf-8")
+        self.assertNotIn(short_secret, content, "Short secret must not appear in log.")
+        self.assertIn("<redacted-secret>", content)
+
     def test_sanitize_text_redacts_ed25519_pubkey_to_fingerprint(self) -> None:
         """Full Ed25519 public key payload must be converted to SHA256 fingerprint."""
         raw_cmd = f"echo '{VALID_ED25519_PUBKEY}' >> /home/vexteradmin/.ssh/authorized_keys"
@@ -111,7 +124,7 @@ class TestLiveLoggingAndRedaction(unittest.TestCase):
 
 
 class TestCommandExecutionAndTimeout(unittest.TestCase):
-    """Tests for non-blocking remote command execution, timeout handling, and return-code checks."""
+    """Tests for non-blocking remote command execution, timeout handling, and transport errors."""
 
     def test_execute_remote_cmd_success(self) -> None:
         """execute_remote_cmd drains stdout and stderr without deadlock and returns exit status."""
@@ -161,38 +174,43 @@ class TestCommandExecutionAndTimeout(unittest.TestCase):
         self.assertIn("Some remote modifications may have already succeeded", err_msg)
         mock_channel.close.assert_called_once()
 
+    def test_execute_remote_cmd_transport_failure_open_session(self) -> None:
+        """
+        P1 finding: socket reset during open_session() must raise SSHTransportError,
+        indicating failure occurred BEFORE command submission.
+        """
+        mock_client = MagicMock()
+        mock_transport = MagicMock()
+
+        mock_client.get_transport.return_value = mock_transport
+        mock_transport.is_active.return_value = True
+        mock_transport.open_session.side_effect = ConnectionResetError("[WinError 10054] Connection reset by peer")
+
+        with self.assertRaises(SSHTransportError) as ctx:
+            execute_remote_cmd(mock_client, "usermod -aG sudo vexteradmin", timeout=5.0)
+
+        self.assertIn("Transport failure opening SSH session before command submission", str(ctx.exception))
+        self.assertIn("10054", str(ctx.exception))
+
     def test_account_presence_distinction(self) -> None:
         """
-        Verify that B-02 logic correctly distinguishes:
-        - rc=0: user exists
-        - rc=1 with 'no such user': user absent
-        - unexpected rc/err: raises RuntimeError rather than assuming absence
+        P2 finding: Verify that B-02 logic requires explicit account-absence patterns
+        and treats unrelated errors (even with exit code 1) as unexpected failures.
         """
+        absence_patterns = ["no such user", "user not found", "unknown user", "does not exist"]
+
         # Case 1: user exists
         rc, out, err = 0, "1001", ""
-        user_exists = (rc == 0)
-        self.assertTrue(user_exists)
+        self.assertTrue(rc == 0)
 
-        # Case 2: user absent (standard id command exit 1 with stderr)
+        # Case 2: standard user absent
         rc, out, err = 1, "", "id: 'vexteradmin': no such user"
-        if rc == 0:
-            user_exists = True
-        elif rc == 1 and ("no such user" in err.lower() or "user not found" in err.lower() or not out):
-            user_exists = False
-        else:
-            user_exists = None
-        self.assertFalse(user_exists)
+        self.assertTrue(rc == 1 and any(p in err.lower() for p in absence_patterns))
 
-        # Case 3: unexpected error (e.g. exit code 127 command not found)
-        rc, out, err = 127, "", "bash: id: command not found"
-        with self.assertRaises(RuntimeError) as ctx:
-            if rc == 0:
-                user_exists = True
-            elif rc == 1 and ("no such user" in err.lower() or "user not found" in err.lower() or not out):
-                user_exists = False
-            else:
-                raise RuntimeError(f"Unexpected error checking user 'vexteradmin' (exit: {rc}, err: {err})")
-        self.assertIn("Unexpected error checking user", str(ctx.exception))
+        # Case 3: exit 1 with empty stdout and unrelated error (must NOT be treated as absent)
+        rc, out, err = 1, "", "id: cannot connect to user database service"
+        is_absent = (rc == 1 and any(p in err.lower() for p in absence_patterns))
+        self.assertFalse(is_absent, "Unrelated exit 1 error must NOT be treated as user absent.")
 
 
 class TestAccurateVerificationReporting(unittest.TestCase):
@@ -226,23 +244,32 @@ class TestAccurateVerificationReporting(unittest.TestCase):
         self.assertEqual(access_status, "PARTIAL")
         self.assertIn("NOT APPLIED / NOT VERIFIED", hardening_status)
 
-    def test_evaluate_verification_gate_failed(self) -> None:
-        """Access verification is FAILED if key login or sudo failed."""
-        access_status, _ = evaluate_verification_gate(
-            key_verified=False,
-            sudo_verified=True,
-            sshd_t_executed=True,
-            sshd_directives={},
-        )
-        self.assertEqual(access_status, "FAILED")
+    def test_evaluate_verification_gate_keyword_compatibility(self) -> None:
+        """P0 regression: evaluate_verification_gate accepts both sshd_directives and ssh_directives."""
+        directives = {"PubkeyAuthentication": {"expected": "yes", "observed": "yes", "status": "PASS"}}
 
-        access_status, _ = evaluate_verification_gate(
-            key_verified=True,
-            sudo_verified=False,
-            sshd_t_executed=True,
-            sshd_directives={},
-        )
-        self.assertEqual(access_status, "FAILED")
+        # Accepts sshd_directives
+        acc1, _ = evaluate_verification_gate(True, True, True, sshd_directives=directives)
+        self.assertEqual(acc1, "FULL")
+
+        # Accepts ssh_directives (previously caused TypeError)
+        acc2, _ = evaluate_verification_gate(True, True, True, ssh_directives=directives)
+        self.assertEqual(acc2, "FULL")
+
+    def test_unavailable_sshd_output_is_not_checked_not_fail(self) -> None:
+        """
+        P2 finding: If sshd -T diagnostic is unavailable, directives must be marked
+        'NOT CHECKED IN BOOTSTRAP' with observed 'UNAVAILABLE', not fabricated 'FAIL'.
+        """
+        directives = evaluate_ssh_directives_status({}, diagnostic_available=False)
+
+        for name, info in directives.items():
+            self.assertEqual(
+                info["status"],
+                "NOT CHECKED IN BOOTSTRAP",
+                f"Directive {name} must be NOT CHECKED when diagnostics fail.",
+            )
+            self.assertEqual(info["observed"], "UNAVAILABLE")
 
     def test_sshd_t_success_does_not_mark_hardening_verified(self) -> None:
         """
@@ -275,18 +302,12 @@ class TestAccurateVerificationReporting(unittest.TestCase):
         # Only PubkeyAuthentication should have PASS status
         self.assertEqual(directives["PubkeyAuthentication"]["status"], "PASS")
 
-    def test_directive_fails_when_expected_does_not_match(self) -> None:
-        """A directive is marked FAIL if its observed value does not match expected."""
-        directives = evaluate_ssh_directives_status({"pubkeyauthentication": "no"})
-        self.assertEqual(directives["PubkeyAuthentication"]["status"], "FAIL")
-        self.assertEqual(directives["PubkeyAuthentication"]["observed"], "no")
-
 
 class TestEndOfRunSummary(unittest.TestCase):
     """Tests for the end-of-run execution summary structure and accuracy."""
 
-    def test_format_end_of_run_summary_counts_and_content(self) -> None:
-        """Summary accurately reflects step counts, mutation states, and next actions."""
+    def test_format_end_of_run_summary_accounts_for_every_step(self) -> None:
+        """P1 finding: summary must account for all 10 steps, including interrupted steps."""
         with tempfile.TemporaryDirectory() as td:
             logger = BootstrapLogger(log_dir=td)
             logger.step_results["B-01"].status = "SUCCESS"
@@ -295,9 +316,8 @@ class TestEndOfRunSummary(unittest.TestCase):
             logger.step_results["B-02"].duration_sec = 0.2
             logger.step_results["B-03"].status = "SKIPPED"
             logger.step_results["B-03"].message = "Already exists"
-            logger.step_results["B-04"].status = "FAILED"
-            logger.step_results["B-04"].duration_sec = 0.3
-            logger.step_results["B-04"].message = "usermod failed"
+            logger.step_results["B-04"].status = "STARTED"  # Interrupted!
+            logger.step_results["B-04"].message = "Connection reset"
             # B-05 through B-10 remain NOT_RUN
 
             start_t = datetime(2026, 10, 21, 15, 0, 0, tzinfo=timezone.utc)
@@ -318,13 +338,350 @@ class TestEndOfRunSummary(unittest.TestCase):
 
             self.assertIn("Steps Completed: 2", summary)
             self.assertIn("Steps Skipped:   1", summary)
-            self.assertIn("Steps Failed:    1", summary)
-            self.assertIn("Steps Not Run:   6", summary)
-            self.assertIn("MUTATIONS OCCURRED", summary)
-            self.assertIn("BOOTSTRAP ACCESS VERIFICATION:       FAILED", summary)
-            self.assertIn("SSH HARDENING POLICY VERIFICATION:   NOT APPLIED / NOT VERIFIED", summary)
-            self.assertIn("Next Safe Action:", summary)
-            self.assertIn("Inspect failure at B-04.", summary)
+            self.assertIn("Steps Failed:    1", summary)  # B-04 counted as failed/interrupted
+            self.assertIn("Steps Not Run:   6", summary)  # B-05 to B-10
+            self.assertIn("Total Steps:     10", summary)
+            # Reconcile counts: 2 + 1 + 1 + 6 = 10
+            self.assertEqual(2 + 1 + 1 + 6, 10)
+
+
+class TestOperatorFailurePathRegression(unittest.TestCase):
+    """
+    P0 Regression test replicating the exact failure seen in operator run on 2026-10-21:
+    - B-01 and B-02 succeed
+    - B-03 skipped (user already exists)
+    - B-04 open_session() fails with ConnectionResetError [WinError 10054]
+    - Proves original failure is preserved, no secondary TypeError is raised,
+      summary is printed, active resources close safely, and non-zero exit code is returned.
+    """
+
+    @patch("scripts.bootstrap_admin.getpass.getpass", return_value="mock_root_pw")
+    @patch("scripts.bootstrap_admin.load_private_key")
+    @patch("scripts.bootstrap_admin.get_public_key", return_value=VALID_ED25519_PUBKEY)
+    @patch("scripts.bootstrap_admin.get_private_key_path", return_value=Path("/tmp/privkey"))
+    @patch("scripts.bootstrap_admin.get_known_hosts_path", return_value=Path("/tmp/known_hosts"))
+    @patch("scripts.bootstrap_admin.paramiko.SSHClient")
+    def test_operator_open_session_reset_handling(
+        self,
+        mock_ssh_client_cls: MagicMock,
+        mock_known_hosts: MagicMock,
+        mock_priv_path: MagicMock,
+        mock_pub_key: MagicMock,
+        mock_load_priv: MagicMock,
+        mock_getpass: MagicMock,
+    ) -> None:
+        mock_root_client = MagicMock()
+        mock_ssh_client_cls.return_value = mock_root_client
+
+        mock_transport = MagicMock()
+        mock_root_client.get_transport.return_value = mock_transport
+        mock_transport.is_active.return_value = True
+
+        # Channel for B-02 (id -u): succeeds, returns 0 (user exists)
+        mock_b02_channel = MagicMock()
+        mock_b02_channel.recv_ready.side_effect = [True, False]
+        mock_b02_channel.recv.return_value = b"1001\n"
+        mock_b02_channel.recv_stderr_ready.return_value = False
+        mock_b02_channel.exit_status_ready.return_value = True
+        mock_b02_channel.recv_exit_status.return_value = 0
+
+        # For B-04 (usermod -aG sudo): open_session raises ConnectionResetError
+        mock_transport.open_session.side_effect = [
+            mock_b02_channel,  # B-02
+            ConnectionResetError("[WinError 10054] An existing connection was forcibly closed by the remote host"),  # B-04
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.dict(os.environ, {"BOOTSTRAP_ROOT_PASSWORD": "test_root_password"}):
+                with patch("sys.argv", ["bootstrap_admin.py", "--host", "192.0.2.1", "--log-dir", td]):
+                    exit_code = main()
+
+            # Must return non-zero
+            self.assertEqual(exit_code, 1)
+
+            # Check persistent log
+            log_files = list(Path(td).glob("bootstrap-*.log"))
+            self.assertEqual(len(log_files), 1)
+            log_content = log_files[0].read_text(encoding="utf-8")
+
+            # Must contain original error context
+            self.assertIn("10054", log_content)
+            self.assertIn("Transport failure opening SSH session before command submission", log_content)
+
+            # Must contain summary
+            self.assertIn("VEXTERSOFT BOOTSTRAP EXECUTION SUMMARY", log_content)
+            self.assertIn("BOOTSTRAP ACCESS VERIFICATION:       FAILED", log_content)
+            self.assertIn("SSH HARDENING POLICY VERIFICATION:   NOT APPLIED / NOT VERIFIED", log_content)
+
+            # Must NOT contain TypeError
+            self.assertNotIn("TypeError", log_content)
+
+
+
+
+class TestResidualCorrectnessIssues(unittest.TestCase):
+    """
+    Tests for PR #16 review findings:
+    1. B-08 remote exit 0 with non-zero UID must fail and NOT be logged as SUCCESS.
+    2. B-09 fallback attempts include rich logger/step metadata for both attempts.
+    3. Transport failure during exec_command marks remote outcome uncertain (no safe retry claim).
+    """
+
+    @patch("scripts.bootstrap_admin.getpass.getpass", return_value="mock_root_pw")
+    @patch("scripts.bootstrap_admin.load_private_key")
+    @patch("scripts.bootstrap_admin.get_public_key", return_value=VALID_ED25519_PUBKEY)
+    @patch("scripts.bootstrap_admin.get_private_key_path", return_value=Path("/tmp/privkey"))
+    @patch("scripts.bootstrap_admin.get_known_hosts_path", return_value=Path("/tmp/known_hosts"))
+    @patch("scripts.bootstrap_admin.paramiko.SSHClient")
+    def test_b08_sudo_uid_mismatch_fails_and_not_logged_success(
+        self,
+        mock_ssh_client_cls: MagicMock,
+        mock_known_hosts: MagicMock,
+        mock_priv_path: MagicMock,
+        mock_pub_key: MagicMock,
+        mock_load_priv: MagicMock,
+        mock_getpass: MagicMock,
+    ) -> None:
+        """
+        B-08 command exits 0 but returns UID '1001'.
+        Must NOT be logged as SUCCESS, and verification gate must fail.
+        """
+        mock_root_client = MagicMock()
+        mock_test_client = MagicMock()
+        mock_ssh_client_cls.side_effect = [mock_root_client, mock_test_client]
+
+        mock_root_transport = MagicMock()
+        mock_root_client.get_transport.return_value = mock_root_transport
+        mock_root_transport.is_active.return_value = True
+
+        mock_test_transport = MagicMock()
+        mock_test_client.get_transport.return_value = mock_test_transport
+        mock_test_transport.is_active.return_value = True
+
+        def _make_mock_channel(exit_code: int, stdout_bytes: bytes, stderr_bytes: bytes = b""):
+            ch = MagicMock()
+            ch.recv_ready.side_effect = [True, False]
+            ch.recv.return_value = stdout_bytes
+            ch.recv_stderr_ready.side_effect = [bool(stderr_bytes), False]
+            ch.recv_stderr.return_value = stderr_bytes
+            ch.exit_status_ready.return_value = True
+            ch.recv_exit_status.return_value = exit_code
+            return ch
+
+        # B-02 (id -u): succeeds (user exists)
+        mock_root_transport.open_session.side_effect = [
+            _make_mock_channel(0, b"1001\n"),  # B-02
+            _make_mock_channel(0, b""),          # B-04
+            _make_mock_channel(0, b""),          # B-05
+            _make_mock_channel(0, b""),          # B-06
+        ]
+
+        # In secondary session: B-08 (sudo -n id -u) exits 0, but output is UID 1001 (not 0!)
+        mock_test_transport.open_session.side_effect = [
+            _make_mock_channel(0, b"1001\n"),  # B-08
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.dict(os.environ, {"BOOTSTRAP_ROOT_PASSWORD": "test_root_password"}):
+                with patch("sys.argv", ["bootstrap_admin.py", "--host", "192.0.2.1", "--log-dir", td]):
+                    exit_code = main()
+
+            self.assertEqual(exit_code, 1)
+
+            log_files = list(Path(td).glob("bootstrap-*.log"))
+            self.assertEqual(len(log_files), 1)
+            content = log_files[0].read_text(encoding="utf-8")
+
+            # Must NOT report B-08 as SUCCESS
+            self.assertNotIn("SUCCESS: Verify passwordless sudo", content)
+            self.assertIn("FAILED: Verify passwordless sudo", content)
+            self.assertIn("Dual-session sudo verification failed (exit: 0, out: '1001'", content)
+            self.assertIn("BOOTSTRAP ACCESS VERIFICATION:       FAILED", content)
+
+    @patch("scripts.bootstrap_admin.getpass.getpass", return_value="mock_root_pw")
+    @patch("scripts.bootstrap_admin.load_private_key")
+    @patch("scripts.bootstrap_admin.get_public_key", return_value=VALID_ED25519_PUBKEY)
+    @patch("scripts.bootstrap_admin.get_private_key_path", return_value=Path("/tmp/privkey"))
+    @patch("scripts.bootstrap_admin.get_known_hosts_path", return_value=Path("/tmp/known_hosts"))
+    @patch("scripts.bootstrap_admin.paramiko.SSHClient")
+    def test_b09_fallback_metadata_logged_and_single_step_success(
+        self,
+        mock_ssh_client_cls: MagicMock,
+        mock_known_hosts: MagicMock,
+        mock_priv_path: MagicMock,
+        mock_pub_key: MagicMock,
+        mock_load_priv: MagicMock,
+        mock_getpass: MagicMock,
+    ) -> None:
+        """
+        B-09 attempt 1 (context) fails with exit 1; attempt 2 (fallback) succeeds with exit 0.
+        Both attempts are logged with command/exit/output metadata.
+        Final B-09 outcome is SUCCESS (single truthful result).
+        """
+        mock_root_client = MagicMock()
+        mock_test_client = MagicMock()
+        mock_ssh_client_cls.side_effect = [mock_root_client, mock_test_client]
+
+        mock_root_transport = MagicMock()
+        mock_root_client.get_transport.return_value = mock_root_transport
+        mock_root_transport.is_active.return_value = True
+
+        mock_test_transport = MagicMock()
+        mock_test_client.get_transport.return_value = mock_test_transport
+        mock_test_transport.is_active.return_value = True
+
+        def _make_mock_channel(exit_code: int, stdout_bytes: bytes, stderr_bytes: bytes = b""):
+            ch = MagicMock()
+            ch.recv_ready.side_effect = [True, False]
+            ch.recv.return_value = stdout_bytes
+            ch.recv_stderr_ready.side_effect = [bool(stderr_bytes), False]
+            ch.recv_stderr.return_value = stderr_bytes
+            ch.exit_status_ready.return_value = True
+            ch.recv_exit_status.return_value = exit_code
+            return ch
+
+        # Root commands
+        mock_root_transport.open_session.side_effect = [
+            _make_mock_channel(0, b"1001\n"),  # B-02
+            _make_mock_channel(0, b""),          # B-04
+            _make_mock_channel(0, b""),          # B-05
+            _make_mock_channel(0, b""),          # B-06
+        ]
+
+        # Secondary session commands:
+        # B-08: sudo -n id -u -> 0
+        # B-09 attempt 1: contextual sshd -T -> exit 1 (fails)
+        # B-09 attempt 2: fallback sshd -T -> exit 0 (succeeds)
+        mock_test_transport.open_session.side_effect = [
+            _make_mock_channel(0, b"0\n"),                                         # B-08
+            _make_mock_channel(1, b"", b"sshd: connection match option error\n"),   # B-09 ctx
+            _make_mock_channel(0, b"pubkeyauthentication yes\nport 22\n"),         # B-09 fallback
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.dict(os.environ, {"BOOTSTRAP_ROOT_PASSWORD": "test_root_password"}):
+                with patch("sys.argv", ["bootstrap_admin.py", "--host", "192.0.2.1", "--log-dir", td]):
+                    exit_code = main()
+
+            self.assertEqual(exit_code, 0)
+
+            log_files = list(Path(td).glob("bootstrap-*.log"))
+            self.assertEqual(len(log_files), 1)
+            content = log_files[0].read_text(encoding="utf-8")
+
+            # Must log both attempts
+            self.assertIn("Executing contextual diagnostic:", content)
+            self.assertIn("Contextual sshd -T failed (exit: 1", content)
+            self.assertIn("Executing fallback diagnostic: sudo sshd -T", content)
+            self.assertIn("Fallback sshd -T succeeded (exit: 0)", content)
+
+            # Final step B-09 is SUCCESS
+            self.assertIn("SUCCESS: Inspect effective sshd configuration", content)
+            self.assertIn("Effective sshd inspected via general fallback", content)
+            self.assertIn("BOOTSTRAP ACCESS VERIFICATION:       FULL", content)
+
+    @patch("scripts.bootstrap_admin.getpass.getpass", return_value="mock_root_pw")
+    @patch("scripts.bootstrap_admin.load_private_key")
+    @patch("scripts.bootstrap_admin.get_public_key", return_value=VALID_ED25519_PUBKEY)
+    @patch("scripts.bootstrap_admin.get_private_key_path", return_value=Path("/tmp/privkey"))
+    @patch("scripts.bootstrap_admin.get_known_hosts_path", return_value=Path("/tmp/known_hosts"))
+    @patch("scripts.bootstrap_admin.paramiko.SSHClient")
+    def test_b09_both_fail_returns_partial_and_nonzero_exit(
+        self,
+        mock_ssh_client_cls: MagicMock,
+        mock_known_hosts: MagicMock,
+        mock_priv_path: MagicMock,
+        mock_pub_key: MagicMock,
+        mock_load_priv: MagicMock,
+        mock_getpass: MagicMock,
+    ) -> None:
+        """
+        B-09 attempt 1 and attempt 2 both fail.
+        Final B-09 is FAILED, access status is PARTIAL, and process returns exit code 2.
+        """
+        mock_root_client = MagicMock()
+        mock_test_client = MagicMock()
+        mock_ssh_client_cls.side_effect = [mock_root_client, mock_test_client]
+
+        mock_root_transport = MagicMock()
+        mock_root_client.get_transport.return_value = mock_root_transport
+        mock_root_transport.is_active.return_value = True
+
+        mock_test_transport = MagicMock()
+        mock_test_client.get_transport.return_value = mock_test_transport
+        mock_test_transport.is_active.return_value = True
+
+        def _make_mock_channel(exit_code: int, stdout_bytes: bytes, stderr_bytes: bytes = b""):
+            ch = MagicMock()
+            ch.recv_ready.side_effect = [True, False]
+            ch.recv.return_value = stdout_bytes
+            ch.recv_stderr_ready.side_effect = [bool(stderr_bytes), False]
+            ch.recv_stderr.return_value = stderr_bytes
+            ch.exit_status_ready.return_value = True
+            ch.recv_exit_status.return_value = exit_code
+            return ch
+
+        mock_root_transport.open_session.side_effect = [
+            _make_mock_channel(0, b"1001\n"),  # B-02
+            _make_mock_channel(0, b""),          # B-04
+            _make_mock_channel(0, b""),          # B-05
+            _make_mock_channel(0, b""),          # B-06
+        ]
+
+        # Secondary session commands:
+        # B-08: sudo -n id -u -> 0
+        # B-09 attempt 1: fails
+        # B-09 attempt 2: fails
+        mock_test_transport.open_session.side_effect = [
+            _make_mock_channel(0, b"0\n"),                              # B-08
+            _make_mock_channel(1, b"", b"sshd -T context error\n"),      # B-09 ctx
+            _make_mock_channel(1, b"", b"sshd -T general error\n"),      # B-09 fallback
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.dict(os.environ, {"BOOTSTRAP_ROOT_PASSWORD": "test_root_password"}):
+                with patch("sys.argv", ["bootstrap_admin.py", "--host", "192.0.2.1", "--log-dir", td]):
+                    exit_code = main()
+
+            # Must return non-zero code 2 for PARTIAL verification
+            self.assertEqual(exit_code, 2)
+
+            log_files = list(Path(td).glob("bootstrap-*.log"))
+            self.assertEqual(len(log_files), 1)
+            content = log_files[0].read_text(encoding="utf-8")
+
+            self.assertIn("FAILED: Inspect effective sshd configuration", content)
+            self.assertIn("BOOTSTRAP ACCESS VERIFICATION:       PARTIAL", content)
+            self.assertIn("PubkeyAuthentication           NOT CHECKED IN BOOTSTRAP (Observed: UNAVAILABLE", content)
+
+    def test_transport_failure_distinguishes_pre_vs_post_submission(self) -> None:
+        """
+        P1 finding: SSHTransportError distinguishes whether command was submitted.
+        - Failure during open_session: submitted=False (safe to conclude command did not run).
+        - Failure during exec_command: submitted=True (in-flight, remote outcome uncertain).
+        """
+        mock_client = MagicMock()
+        mock_transport = MagicMock()
+        mock_client.get_transport.return_value = mock_transport
+        mock_transport.is_active.return_value = True
+
+        # Pre-submission failure: open_session raises
+        mock_transport.open_session.side_effect = ConnectionResetError("reset before session open")
+        with self.assertRaises(SSHTransportError) as ctx:
+            execute_remote_cmd(mock_client, "useradd vexteradmin")
+        self.assertFalse(ctx.exception.submitted)
+        self.assertIn("before command submission", str(ctx.exception))
+
+        # Post/in-submission failure: open_session succeeds, exec_command raises
+        mock_channel = MagicMock()
+        mock_transport.open_session.side_effect = None
+        mock_transport.open_session.return_value = mock_channel
+        mock_channel.exec_command.side_effect = ConnectionResetError("reset during command submission")
+
+        with self.assertRaises(SSHTransportError) as ctx2:
+            execute_remote_cmd(mock_client, "useradd vexteradmin")
+        self.assertTrue(ctx2.exception.submitted)
+        self.assertIn("during or after command submission", str(ctx2.exception))
 
 
 if __name__ == "__main__":

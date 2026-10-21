@@ -24,10 +24,9 @@ import re
 import shlex
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 try:
     import paramiko
@@ -63,10 +62,19 @@ STEPS = {
     "B-10": "Write local Ansible inventory",
 }
 
+ABSENCE_PATTERNS = ["no such user", "user not found", "unknown user", "does not exist"]
+
 
 class CommandTimeoutError(RuntimeError):
     """Raised when a remote command exceeds its allocated timeout."""
     pass
+
+
+class SSHTransportError(RuntimeError):
+    """Raised when an SSH transport or session failure occurs before or during command execution."""
+    def __init__(self, message: str, submitted: bool = False):
+        super().__init__(message)
+        self.submitted = submitted
 
 
 @dataclass
@@ -91,8 +99,9 @@ def sanitize_text(text: str, secrets: list[str] | None = None) -> str:
 
     out = text
     if secrets:
-        for s in secrets:
-            if s and len(s) >= 4:
+        # Sort secrets longest-first to prevent partial substring leaks
+        for s in sorted(secrets, key=len, reverse=True):
+            if s:
                 out = out.replace(s, "<redacted-secret>")
 
     # Redact full Ed25519 public keys in command strings or outputs
@@ -362,10 +371,7 @@ def verify_effective_sshd_settings(
     effective_config: dict[str, str],
     expected_settings: dict[str, str] | None = None,
 ) -> tuple[bool, list[str]]:
-    """
-    Verify that effective sshd configuration satisfies required baseline security settings.
-    Returns (is_valid, list_of_errors).
-    """
+    """Verify that effective sshd configuration satisfies required baseline security settings."""
     if expected_settings is None:
         expected_settings = {
             "passwordauthentication": "no",
@@ -384,15 +390,40 @@ def verify_effective_sshd_settings(
     return (len(errors) == 0, errors)
 
 
-def evaluate_ssh_directives_status(effective_config: dict[str, str]) -> dict[str, dict[str, str]]:
+def evaluate_ssh_directives_status(
+    effective_config: dict[str, str],
+    diagnostic_available: bool = True,
+) -> dict[str, dict[str, str]]:
     """
     Evaluate SSH directives accurately and truthfully.
-    Only directives with an explicit expected value compared in this phase are marked PASS/FAIL.
-    All hardening directives enforced by Ansible are explicitly marked NOT CHECKED IN BOOTSTRAP.
+    If diagnostic output is unavailable, all directives are marked NOT CHECKED IN BOOTSTRAP.
+    Never claims a directive failed or passed without an observed effective value.
     """
     directives: dict[str, dict[str, str]] = {}
 
-    # PubkeyAuthentication: required for key-based admin access
+    if not diagnostic_available or not effective_config:
+        directives["PubkeyAuthentication"] = {
+            "expected": "yes",
+            "observed": "UNAVAILABLE",
+            "status": "NOT CHECKED IN BOOTSTRAP",
+        }
+        directives["PasswordAuthentication"] = {
+            "expected": "no (enforced in Ansible phase)",
+            "observed": "UNAVAILABLE",
+            "status": "NOT CHECKED IN BOOTSTRAP",
+        }
+        directives["PermitRootLogin"] = {
+            "expected": "prohibit-password (enforced in Ansible phase)",
+            "observed": "UNAVAILABLE",
+            "status": "NOT CHECKED IN BOOTSTRAP",
+        }
+        directives["KbdInteractiveAuthentication"] = {
+            "expected": "no (enforced in Ansible phase)",
+            "observed": "UNAVAILABLE",
+            "status": "NOT CHECKED IN BOOTSTRAP",
+        }
+        return directives
+
     obs_pubkey = effective_config.get("pubkeyauthentication", "").lower()
     directives["PubkeyAuthentication"] = {
         "expected": "yes",
@@ -400,7 +431,6 @@ def evaluate_ssh_directives_status(effective_config: dict[str, str]) -> dict[str
         "status": "PASS" if obs_pubkey == "yes" else "FAIL",
     }
 
-    # Hardening directives: deferred to Ansible baseline hardening
     obs_pass = effective_config.get("passwordauthentication", "").lower()
     directives["PasswordAuthentication"] = {
         "expected": "no (enforced in Ansible phase)",
@@ -429,21 +459,24 @@ def evaluate_verification_gate(
     key_verified: bool,
     sudo_verified: bool,
     sshd_t_executed: bool,
-    sshd_directives: dict[str, dict[str, str]],
+    sshd_directives: dict[str, dict[str, str]] | None = None,
+    ssh_directives: dict[str, dict[str, str]] | None = None,
 ) -> tuple[str, str]:
     """
     Evaluate verification statuses with strict separation between:
       1. BOOTSTRAP ACCESS VERIFICATION: FULL / PARTIAL / FAILED
       2. SSH HARDENING POLICY VERIFICATION: NOT APPLIED / NOT VERIFIED
+    Accepts sshd_directives or ssh_directives to prevent keyword mismatch.
     """
+    directives = sshd_directives if sshd_directives is not None else (ssh_directives or {})
+
     if not (key_verified and sudo_verified):
         access_status = "FAILED"
-    elif sshd_t_executed and sshd_directives.get("PubkeyAuthentication", {}).get("status") == "PASS":
+    elif sshd_t_executed and directives.get("PubkeyAuthentication", {}).get("status") == "PASS":
         access_status = "FULL"
     else:
         access_status = "PARTIAL"
 
-    # SSH hardening policy is NEVER verified by bootstrap phase
     hardening_status = "NOT APPLIED / NOT VERIFIED (Deferred to Ansible baseline hardening)"
     return access_status, hardening_status
 
@@ -454,24 +487,20 @@ def format_verification_summary(
     sshd_effective_verified: bool,
 ) -> tuple[str, bool]:
     """
-    Format clear verification gate status and determine whether full verification was achieved.
+    Helper for scoped verification gate status without ambiguous standalone wording.
     Returns (summary_text, is_fully_verified).
-    Accurately distinguishes between full verification (key + sudo + effective sshd)
-    and partial verification where effective sshd could not be inspected.
     """
     if not (key_verified and sudo_verified):
-        return ("Verification FAILED: Core access gates (SSH key or sudo) were not validated.", False)
+        return ("BOOTSTRAP ACCESS VERIFICATION: FAILED - Core access gates (SSH key or sudo) were not validated.", False)
 
     if sshd_effective_verified:
         return (
-            "FULL VERIFICATION: Non-root SSH key access, sudo execution, and effective sshd configuration verified.",
+            "BOOTSTRAP ACCESS VERIFICATION: FULL (Non-root SSH key access, sudo execution, and effective sshd verified).",
             True,
         )
 
     return (
-        "PARTIAL VERIFICATION: Non-root SSH key access and sudo execution validated. "
-        "Effective sshd configuration was NOT verified on the server (diagnostic check unverified). "
-        "Ansible baseline hardening must perform strict sshd verification before reloading daemon.",
+        "BOOTSTRAP ACCESS VERIFICATION: PARTIAL (Non-root SSH key access and sudo execution validated; effective sshd unverified).",
         False,
     )
 
@@ -506,6 +535,7 @@ def execute_remote_cmd(
     """
     Execute command remotely with non-blocking channel polling to prevent deadlocks,
     enforcing an explicit timeout and recording live execution duration.
+    Distinguishes pre-submission transport failures from execution timeouts.
     """
     preview = command_preview or cmd
     if logger and step_id:
@@ -514,26 +544,38 @@ def execute_remote_cmd(
     start_time = time.monotonic()
     transport = client.get_transport()
     if transport is None or not transport.is_active():
-        err_msg = "SSH transport is not active."
+        err_msg = f"SSH transport is not active for step {step_id or 'unknown'}."
         if logger and step_id:
             logger.log_step_failed(step_id, 0.0, err_msg)
-        raise RuntimeError(err_msg)
+        raise SSHTransportError(err_msg)
 
-    channel = transport.open_session()
-    channel.settimeout(timeout)
-    channel.setblocking(0)
+    # Phase 1: Open session channel before submitting command
+    try:
+        channel = transport.open_session()
+        channel.settimeout(timeout)
+        channel.setblocking(0)
+    except Exception as e:
+        dur = time.monotonic() - start_time
+        err_msg = f"Transport failure opening SSH session before command submission: {e}"
+        if logger and step_id:
+            logger.log_step_failed(step_id, dur, err_msg)
+        raise SSHTransportError(err_msg, submitted=False) from e
 
+    # Phase 2: Submit command over channel
     try:
         channel.exec_command(cmd)
     except Exception as e:
         dur = time.monotonic() - start_time
+        err_msg = f"Transport failure during or after command submission: {e}"
         if logger and step_id:
-            logger.log_step_failed(step_id, dur, f"Failed to execute command: {e}")
+            logger.log_step_failed(step_id, dur, err_msg)
         channel.close()
-        raise
+        raise SSHTransportError(err_msg, submitted=True) from e
 
+    # Phase 3: Drain stdout/stderr without deadlocks
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
+    last_wait_log = start_time
 
     while True:
         if channel.recv_ready():
@@ -547,7 +589,6 @@ def execute_remote_cmd(
                 stderr_chunks.append(chunk)
 
         if channel.exit_status_ready():
-            # Drain remaining data
             while channel.recv_ready():
                 stdout_chunks.append(channel.recv(4096))
             while channel.recv_stderr_ready():
@@ -565,6 +606,10 @@ def execute_remote_cmd(
                 logger.log_step_failed(step_id, elapsed, timeout_msg)
             raise CommandTimeoutError(timeout_msg)
 
+        if logger and step_id and (time.monotonic() - last_wait_log > 5.0):
+            last_wait_log = time.monotonic()
+            logger.log("DEBUG", f"Still executing command ({elapsed:.1f}s elapsed)...", step_id=step_id)
+
         time.sleep(0.05)
 
     duration = time.monotonic() - start_time
@@ -574,18 +619,25 @@ def execute_remote_cmd(
     out = b"".join(stdout_chunks).decode("utf-8", errors="replace").strip()
     err = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
 
-    # Create bounded summaries (first 200 chars) for logging
-    out_summary = (out[:200] + "...") if len(out) > 200 else out
-    err_summary = (err[:200] + "...") if len(err) > 200 else err
+    out_summary = (out[:300] + "...") if len(out) > 300 else out
+    err_summary = (err[:300] + "...") if len(err) > 300 else err
 
     if logger and step_id:
         if exit_code == 0:
-            logger.log_step_success(step_id, duration, stdout_summary=out_summary or None)
+            msg = "Exit code 0"
+            if out_summary:
+                msg += f" | Stdout: {out_summary}"
+            logger.log_step_success(step_id, duration, message=msg, stdout_summary=out_summary or None)
         else:
+            msg = f"Exit code {exit_code}"
+            if err_summary:
+                msg += f" | Stderr: {err_summary}"
+            elif out_summary:
+                msg += f" | Stdout: {out_summary}"
             logger.log_step_failed(
                 step_id,
                 duration,
-                f"Exit status {exit_code}",
+                error_msg=msg,
                 stdout_summary=out_summary or None,
                 stderr_summary=err_summary or None,
             )
@@ -604,7 +656,7 @@ def format_end_of_run_summary(
     ssh_directives: dict[str, dict[str, str]],
     next_safe_action: str,
 ) -> str:
-    """Format comprehensive, structured, and truthful end-of-run execution summary."""
+    """Format comprehensive, structured, and truthful end-of-run execution summary accounting for all steps."""
     total_sec = (end_time_utc - start_time_utc).total_seconds()
     lines: list[str] = [
         "",
@@ -638,8 +690,12 @@ def format_end_of_run_summary(
         elif res.status == "FAILED":
             lines.append(f"  [FAILED]  {sid} {STEPS[sid]} ({res.duration_sec:.2f}s) - {res.message}")
             failed_cnt += 1
+        elif res.status in ("STARTED", "INTERRUPTED"):
+            lines.append(f"  [FAILED]  {sid} {STEPS[sid]} (interrupted during execution) - {res.message or 'interrupted'}")
+            failed_cnt += 1
         else:
             lines.append(f"  [{res.status}] {sid} {STEPS[sid]}")
+            failed_cnt += 1
 
     lines.extend([
         "",
@@ -648,6 +704,7 @@ def format_end_of_run_summary(
         f"  Steps Skipped:   {skipped_cnt}",
         f"  Steps Failed:    {failed_cnt}",
         f"  Steps Not Run:   {not_run_cnt}",
+        f"  Total Steps:     {len(STEPS)}",
         "",
         "Remote Mutation State:",
     ])
@@ -707,6 +764,10 @@ def main() -> int:
     sudo_verified = False
     sshd_t_executed = False
     ssh_directives: dict[str, dict[str, str]] = {}
+    exit_code = 0
+
+    root_client: paramiko.SSHClient | None = None
+    test_client: paramiko.SSHClient | None = None
 
     env_config = load_env_config()
     host = args.host or os.environ.get("VPS_IP") or env_config.get("VPS_IP")
@@ -724,7 +785,6 @@ def main() -> int:
         priv_key_path = get_private_key_path()
         known_hosts_path = get_known_hosts_path(args.known_hosts)
 
-        # Retrieve root password securely
         root_password = os.environ.pop("BOOTSTRAP_ROOT_PASSWORD", None) or os.environ.pop("SSH_PASSWORD", None)
         if not root_password:
             if sys.stdin.isatty():
@@ -734,14 +794,12 @@ def main() -> int:
 
         logger.add_secret(root_password)
 
-        # Retrieve key passphrase securely
         key_passphrase = os.environ.pop("BOOTSTRAP_KEY_PASSPHRASE", None) or os.environ.pop("SSH_KEY_PASSPHRASE", None)
         if key_passphrase:
             logger.add_secret(key_passphrase)
 
         pkey = load_private_key(priv_key_path, key_passphrase)
 
-        # Primary root connection with strict host-key checking
         root_client = paramiko.SSHClient()
         root_client.load_host_keys(str(known_hosts_path))
         root_client.set_missing_host_key_policy(paramiko.RejectPolicy())
@@ -756,7 +814,6 @@ def main() -> int:
             look_for_keys=False,
             allow_agent=False,
         )
-        # Scrub root password immediately from local memory
         root_password = None
 
         logger.log_step_success(
@@ -777,10 +834,12 @@ def main() -> int:
         )
         if rc == 0:
             user_exists = True
-        elif rc == 1 and ("no such user" in err.lower() or "user not found" in err.lower() or not out):
+        elif rc == 1 and any(pat in err.lower() for pat in ABSENCE_PATTERNS):
             user_exists = False
         else:
-            raise RuntimeError(f"Unexpected error checking user '{admin_user}' (exit: {rc}, err: {err})")
+            raise RuntimeError(
+                f"Unexpected error checking user '{admin_user}' (exit: {rc}, stdout: '{out}', stderr: '{err}')"
+            )
 
         # Step B-03: Create admin account
         if not user_exists:
@@ -887,46 +946,100 @@ def main() -> int:
             raise RuntimeError(f"Dual-session authentication failed: {e}")
 
         # Step B-08: Verify passwordless sudo
+        logger.log_step_start("B-08", command_preview="sudo -n id -u")
+        b08_start = time.monotonic()
         rc, out, err = execute_remote_cmd(
             test_client,
             "sudo -n id -u",
             timeout=args.command_timeout,
-            step_id="B-08",
-            logger=logger,
-            command_preview="sudo -n id -u",
         )
-        if rc != 0 or out != "0":
+        b08_dur = time.monotonic() - b08_start
+        if rc == 0 and out == "0":
+            sudo_verified = True
+            logger.log_step_success(
+                "B-08",
+                b08_dur,
+                message="Verified passwordless sudo (UID 0)",
+                stdout_summary=out,
+            )
+        else:
             test_client.close()
-            raise RuntimeError(f"Dual-session sudo verification failed (exit: {rc}, out: '{out}', err: '{err}')")
+            err_msg = f"Dual-session sudo verification failed (exit: {rc}, out: '{out}', err: '{err}')"
+            logger.log_step_failed(
+                "B-08",
+                b08_dur,
+                error_msg=err_msg,
+                stdout_summary=out or None,
+                stderr_summary=err or None,
+            )
+            raise RuntimeError(err_msg)
 
-        sudo_verified = True
+        # Step B-09: Inspect effective sshd configuration (single cohesive step with fallback)
+        logger.log_step_start("B-09", command_preview=f"sudo sshd -T -C user={admin_user}")
+        b09_start = time.monotonic()
 
-        # Step B-09: Inspect effective sshd configuration
+        ctx_cmd = f"sudo sshd -T -C user={shlex.quote(admin_user)},host=127.0.0.1,addr=127.0.0.1"
+        logger.log("INFO", f"Executing contextual diagnostic: {ctx_cmd}", step_id="B-09")
         rc, out, err = execute_remote_cmd(
             test_client,
-            f"sudo sshd -T -C user={shlex.quote(admin_user)},host=127.0.0.1,addr=127.0.0.1",
+            ctx_cmd,
             timeout=args.command_timeout,
-            step_id="B-09",
-            logger=logger,
-            command_preview=f"sudo sshd -T -C user={admin_user}",
         )
-        if rc != 0:
-            # Fallback to general sshd -T
-            rc, out, err = execute_remote_cmd(
-                test_client,
-                "sudo sshd -T",
-                timeout=args.command_timeout,
-                command_preview="sudo sshd -T (fallback)",
-            )
-
-        test_client.close()
+        out_sum = (out[:200] + "...") if len(out) > 200 else out
+        err_sum = (err[:200] + "...") if len(err) > 200 else err
 
         if rc == 0:
+            logger.log("INFO", f"Contextual sshd -T succeeded (exit: 0) | Stdout: {out_sum}", step_id="B-09")
             sshd_t_executed = True
             effective_cfg = parse_sshd_config_t(out)
-            ssh_directives = evaluate_ssh_directives_status(effective_cfg)
+            ssh_directives = evaluate_ssh_directives_status(effective_cfg, diagnostic_available=True)
+            logger.log_step_success(
+                "B-09",
+                time.monotonic() - b09_start,
+                message="Effective sshd inspected via contextual diagnostic",
+                stdout_summary=out_sum,
+            )
         else:
-            ssh_directives = evaluate_ssh_directives_status({})
+            logger.log(
+                "WARN",
+                f"Contextual sshd -T failed (exit: {rc}, err: {err_sum}); attempting fallback: sudo sshd -T",
+                step_id="B-09",
+            )
+            fb_cmd = "sudo sshd -T"
+            logger.log("INFO", f"Executing fallback diagnostic: {fb_cmd}", step_id="B-09")
+            rc_fb, out_fb, err_fb = execute_remote_cmd(
+                test_client,
+                fb_cmd,
+                timeout=args.command_timeout,
+            )
+            out_fb_sum = (out_fb[:200] + "...") if len(out_fb) > 200 else out_fb
+            err_fb_sum = (err_fb[:200] + "...") if len(err_fb) > 200 else err_fb
+            b09_dur = time.monotonic() - b09_start
+
+            if rc_fb == 0:
+                logger.log("INFO", f"Fallback sshd -T succeeded (exit: 0) | Stdout: {out_fb_sum}", step_id="B-09")
+                sshd_t_executed = True
+                effective_cfg = parse_sshd_config_t(out_fb)
+                ssh_directives = evaluate_ssh_directives_status(effective_cfg, diagnostic_available=True)
+                logger.log_step_success(
+                    "B-09",
+                    b09_dur,
+                    message="Effective sshd inspected via general fallback (sudo sshd -T)",
+                    stdout_summary=out_fb_sum,
+                )
+            else:
+                logger.log("ERROR", f"Fallback sshd -T failed (exit: {rc_fb}, err: {err_fb_sum})", step_id="B-09")
+                sshd_t_executed = False
+                ssh_directives = evaluate_ssh_directives_status({}, diagnostic_available=False)
+                logger.log_step_failed(
+                    "B-09",
+                    b09_dur,
+                    error_msg=f"All sshd -T diagnostic attempts failed (ctx exit: {rc}, fallback exit: {rc_fb})",
+                    stdout_summary=out_fb_sum or out_sum,
+                    stderr_summary=err_fb_sum or err_sum,
+                )
+
+        test_client.close()
 
         # Step B-10: Write local uncommitted inventory
         logger.log_step_start("B-10", command_preview="Write ansible/inventory/hosts.yml")
@@ -960,16 +1073,21 @@ all:
         root_client.close()
 
         access_status, hardening_status = evaluate_verification_gate(
-            key_verified=key_verified,
-            sudo_verified=sudo_verified,
-            sshd_t_executed=sshd_t_executed,
-            sshd_directives=ssh_directives,
+            key_verified, sudo_verified, sshd_t_executed, ssh_directives
         )
 
-        next_action = (
-            "Proceed to Phase B: Execute Ansible baseline hardening playbook:\n"
-            "    ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/01-baseline-hardening.yml"
-        )
+        if access_status == "FULL":
+            exit_code = 0
+            next_action = (
+                "Proceed to Phase B: Execute Ansible baseline hardening playbook:\n"
+                "    ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/01-baseline-hardening.yml"
+            )
+        else:
+            exit_code = 2
+            next_action = (
+                "Access verification is PARTIAL (effective sshd could not be inspected). "
+                "Ansible baseline hardening must strictly enforce and verify sshd before reloading."
+            )
 
         summary_text = format_end_of_run_summary(
             logger=logger,
@@ -985,69 +1103,72 @@ all:
         print(summary_text, flush=True)
         logger.log("INFO", summary_text, stream_console=False)
         logger.close()
-        return 0
+        return exit_code
 
     except CommandTimeoutError as e:
         mutation_outcome_unknown = True
         logger.log("ERROR", f"TIMEOUT: {e}")
-        try:
-            root_client.close()
-        except Exception:
-            pass
-
-        access_status, hardening_status = evaluate_verification_gate(
-            key_verified=key_verified,
-            sudo_verified=sudo_verified,
-            sshd_t_executed=sshd_t_executed,
-            sshd_directives=ssh_directives,
-        )
-
+        exit_code = 1
         next_action = (
             "Inspect target host manually or via Contabo recovery console. "
             "A command timed out and remote state is indeterminate."
         )
-
-        summary_text = format_end_of_run_summary(
-            logger=logger,
-            start_time_utc=start_time_utc,
-            end_time_utc=datetime.now(timezone.utc),
-            mutations_occurred=mutations_occurred,
-            mutation_outcome_unknown=True,
-            access_status=access_status,
-            hardening_status=hardening_status,
-            ssh_directives=ssh_directives,
-            next_safe_action=next_action,
-        )
-        print(summary_text, file=sys.stderr, flush=True)
-        logger.log("ERROR", summary_text, stream_console=False)
-        logger.close()
-        return 1
-
+    except SSHTransportError as e:
+        exit_code = 1
+        if e.submitted:
+            mutation_outcome_unknown = True
+            logger.log("ERROR", f"TRANSPORT FAILURE DURING/AFTER COMMAND SUBMISSION: {e}")
+            next_action = (
+                "Transport failure occurred during or after command submission. "
+                "Remote outcome is UNCERTAIN (the command may have started on the host). "
+                "Do NOT blindly retry mutations; verify VPS state manually before taking further action."
+            )
+        else:
+            logger.log("ERROR", f"TRANSPORT FAILURE BEFORE COMMAND SUBMISSION: {e}")
+            next_action = (
+                "Transport failure occurred before command submission (session open failed). "
+                "No command was transmitted for the failing step. "
+                "Check VPS network connectivity, firewall, or SSH service status."
+            )
     except Exception as e:
         logger.log("ERROR", f"FATAL ERROR: {e}")
-        try:
-            root_client.close()
-        except Exception:
-            pass
-
-        access_status, hardening_status = evaluate_verification_gate(
-            key_verified=key_verified,
-            sudo_verified=sudo_verified,
-            sshd_t_executed=sshd_t_executed,
-            ssh_directives=ssh_directives,
-        )
-
+        exit_code = 1
         next_action = (
             "Resolve the reported error before re-running bootstrap. "
             "If mutations occurred, initial root login remains available because sshd hardening was deferred."
         )
+    finally:
+        if test_client:
+            try:
+                test_client.close()
+            except Exception:
+                pass
+        if root_client:
+            try:
+                root_client.close()
+            except Exception:
+                pass
+
+    # Ensure any interrupted step left in STARTED state is recorded as FAILED
+    for sid, res in logger.step_results.items():
+        if res.status == "STARTED":
+            res.status = "FAILED"
+            res.message = "interrupted by error or connection reset"
+
+    try:
+        if not ssh_directives:
+            ssh_directives = evaluate_ssh_directives_status({}, diagnostic_available=False)
+
+        access_status, hardening_status = evaluate_verification_gate(
+            key_verified, sudo_verified, sshd_t_executed, ssh_directives
+        )
 
         summary_text = format_end_of_run_summary(
             logger=logger,
             start_time_utc=start_time_utc,
             end_time_utc=datetime.now(timezone.utc),
             mutations_occurred=mutations_occurred,
-            mutation_outcome_unknown=False,
+            mutation_outcome_unknown=mutation_outcome_unknown,
             access_status=access_status,
             hardening_status=hardening_status,
             ssh_directives=ssh_directives,
@@ -1055,8 +1176,11 @@ all:
         )
         print(summary_text, file=sys.stderr, flush=True)
         logger.log("ERROR", summary_text, stream_console=False)
-        logger.close()
-        return 1
+    except Exception as sum_err:
+        print(f"[-] Error generating final summary: {sum_err}", file=sys.stderr)
+
+    logger.close()
+    return exit_code
 
 
 if __name__ == "__main__":
