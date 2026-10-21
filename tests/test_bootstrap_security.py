@@ -263,22 +263,22 @@ maxauthtries 4
             key_verified=True, sudo_verified=True, sshd_effective_verified=True
         )
         self.assertTrue(is_full)
-        self.assertIn("FULL VERIFICATION", full_msg)
+        self.assertIn("BOOTSTRAP ACCESS VERIFICATION: FULL", full_msg)
 
         # Partial verification case (effective sshd not inspected):
         partial_msg, is_partial = format_verification_summary(
             key_verified=True, sudo_verified=True, sshd_effective_verified=False
         )
         self.assertFalse(is_partial)
-        self.assertIn("PARTIAL VERIFICATION", partial_msg)
-        self.assertIn("Effective sshd configuration was NOT verified", partial_msg)
+        self.assertIn("BOOTSTRAP ACCESS VERIFICATION: PARTIAL", partial_msg)
+        self.assertIn("effective sshd unverified", partial_msg)
 
         # Failed verification case (e.g. sudo failed):
         fail_msg, is_ok = format_verification_summary(
             key_verified=True, sudo_verified=False, sshd_effective_verified=True
         )
         self.assertFalse(is_ok)
-        self.assertIn("FAILED", fail_msg)
+        self.assertIn("BOOTSTRAP ACCESS VERIFICATION: FAILED", fail_msg)
 
 
 class TestSwapRobustness(unittest.TestCase):
