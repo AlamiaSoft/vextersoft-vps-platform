@@ -30,7 +30,8 @@ def changed_paths() -> list[Path]:
     if base:
         command = ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD"]
     else:
-        command = ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]
+        # Compare against the first parent so post-merge commits are checked too.
+        command = ["git", "diff", "--name-only", "HEAD^", "HEAD"]
     result = subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
     paths = []
     for item in result.stdout.splitlines():
