@@ -241,7 +241,10 @@
     - name: Verify effective PermitRootLogin prohibits passwords
       ansible.builtin.assert:
         that:
-          - "('permitrootlogin prohibit-password' in sshd_effective_global.stdout_lines) or ('permitrootlogin without-password' in sshd_effective_global.stdout_lines) or ('permitrootlogin no' in sshd_effective_global.stdout_lines)"
+          - >-
+            ('permitrootlogin prohibit-password' in sshd_effective_global.stdout_lines)
+            or ('permitrootlogin without-password' in sshd_effective_global.stdout_lines)
+            or ('permitrootlogin no' in sshd_effective_global.stdout_lines)
         fail_msg: "Effective sshd check failed: PermitRootLogin must prohibit password-based root login (no, prohibit-password, or its without-password alias)."
 
     - name: Verify effective PubkeyAuthentication is enabled
