@@ -2,8 +2,6 @@
 name: Agent Task Specification
 about: Structured task specification for AI agent and human engineer lifecycle execution
 title: "[TASK] "
-labels: ["task"]
-assignees: []
 ---
 
 ## 1. Objective

@@ -83,7 +83,7 @@ Upon completing implementation and verification:
 
 ## 5. Host Safety & Infrastructure Invariants
 
-For all host operations on the Contabo VPS (`5.189.128.157` / Ubuntu 24.04.5 LTS):
+For all host operations on the Contabo VPS (Ubuntu 24.04.5 LTS x86_64):
 
 1. **OS Preservation:** Never reinstall the operating system without explicit owner approval.
 2. **Dual-Session SSH Gate:**

@@ -21,3 +21,6 @@ venv/
 # OS artifacts
 .DS_Store
 Thumbs.db
+
+# Local scratch & operational tooling
+scripts/github_issues.py

@@ -3,7 +3,7 @@
 This file contains the foundational rules for all AI agents working in this repository. It is automatically injected into the context of every new conversation.
 
 ## 1. The Canonical Execution Protocol
-All agents MUST strictly follow and enforce [AGENT_PROTOCOL.md](file:///e:/Alamia/vextersoft-vps-platform/AGENT_PROTOCOL.md). 
+All agents MUST strictly follow and enforce [AGENT_PROTOCOL.md](../AGENT_PROTOCOL.md). 
 - Every non-trivial task must be tied to a GitHub Issue and follow the issue lifecycle comments (Pre-execution comment, Checkpoint when blocked, Completion comment with sanitized terminal evidence).
 - Feature / task branches must follow: `agent/issue-<number>-<short-slug>`.
 - Changes must be submitted via Pull Request targeting `main`. Agents must NOT merge PRs or close issues unilaterally without explicit owner authorization.
