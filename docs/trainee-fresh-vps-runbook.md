@@ -371,14 +371,14 @@ For phases not installed yet, do not mark their checks as passed. Record them as
 
 ## 13. Trainee handoff report
 
-Submit this report in the assigned internal GitHub issue or other owner-approved location. Replace sensitive values with safe labels or partial identifiers.
+Submit this report in the owner-approved handoff location. This repository and its GitHub issues may be public: do not post public IPs, provider console details, or other infrastructure identifiers in public issues. Use a private channel for sensitive operational details and sanitized evidence in the public tracker.
 
 ```text
 VPS resource ID:
 Provider / region:
 Assigned test purpose:
 OS release / architecture:
-Public IP (internal issue only; do not put in public docs):
+Target identifier (use a non-sensitive alias in public records):
 Bootstrap: PASS / FAIL
 Trusted host-key fingerprint verified out-of-band: YES / NO
 Independent SSH + sudo check: PASS / FAIL
