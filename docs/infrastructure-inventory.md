@@ -2,6 +2,7 @@
 
 **Host Identifier:** `vmi3682629`  
 **Provider:** Contabo Cloud VPS  
+**Contracted Profile:** 6 vCPU / 12 GB RAM / 200 GB SSD  
 **Public IPv4:** `<TARGET_HOST_IPV4>` (Refer to private inventory / `.env`)  
 **Public IPv6:** `<TARGET_HOST_IPV6>`  
 **Last Audit Date:** 2026-10-22  
@@ -11,15 +12,20 @@
 ---
 
 ## 1. Compute & Virtualization
-- **Hypervisor:** KVM (QEMU virtual machine)
-- **vCPU Cores:** 6 vCPUs (AMD EPYC, Little Endian x86_64)
-- **Memory (RAM):** 15 GiB Total (~610 MiB Used, ~14 GiB Available)
-- **Swap:** 4.0 GiB partition (`/dev/sdc`) active with priority -2
+- **Hypervisor:** KVM (QEMU virtual machine, `Standard PC _i440FX + PIIX, 1996_`)
+- **vCPU Cores:** 6 vCPUs (AMD EPYC, Little Endian x86_64, `nproc = 6`)
+- **Memory (RAM):**
+  - **Provider Assigned:** 12 GB RAM
+  - **Measured Total (`free -b`):** 12,541,493,248 bytes (~12.54 GB decimal / 11.68 GiB binary)
+  - **Linux Kernel Total (`/proc/meminfo`):** `MemTotal: 12247552 kB`
+  - **Measured Available (`/proc/meminfo`):** `MemAvailable: 11574188 kB` (~11 GiB available, ~660 MiB used)
+  *(Note on historical discrepancy: An earlier report erroneously recorded 15 GiB RAM due to a local WSL execution anomaly during interactive command quoting. Direct raw query via `/proc/meminfo` confirms exactly 12,247,552 kB matching the contracted 12 GB Contabo plan).*
+- **Swap:** 4.0 GiB swapfile (`/swapfile`, file, priority -2)
 
 ---
 
 ## 2. Operating System & Kernel
-- **Distribution:** Ubuntu 24.04.1 LTS (Noble Numbat)
+- **Distribution:** Ubuntu 24.04.5 LTS (Noble Numbat)
 - **Kernel Version:** Linux 6.8.0-139-generic x86_64
 - **Init System:** Systemd 255
 - **Time Synchronization:** systemd-timesyncd active
@@ -27,12 +33,14 @@
 ---
 
 ## 3. Storage & Partitions
-- **Primary Block Device:** `/dev/sdd` (ext4)
+- **Primary Block Device:** `/dev/sda` (QEMU HARDDISK)
 - **Partition Layout:**
-  - `/dev/sdd`: 1007 GiB total, 4.4 GiB used (1%), 952 GiB available mounted at `/`
-  - `/dev/sdc`: 4.0 GiB swap partition
+  - `/dev/sda1` (ext4): 193 GiB total, 7.3 GiB used (4%), 186 GiB available mounted at `/` (label: `cloudimg-rootfs`)
+  - `/dev/sda15` (vfat): 105 MiB mounted at `/boot/efi` (UEFI)
+  - `/dev/sda16` (ext4): 881 MiB mounted at `/boot`
+  - `/swapfile`: 4.0 GiB file-backed swap
 - **Docker Persistent Storage:**
-  - Volume: `vextersoft_portainer_data` (Driver: local) mounted at `/data` in Portainer
+  - Named Volume: `vextersoft_portainer_data` (Driver: local) mounted at `/data` in Portainer
 
 ---
 
@@ -60,7 +68,7 @@
 ---
 
 ## 5. Docker & Management Services
-- **Docker Engine:** `29.9.2` (API: `1.48`)
+- **Docker Engine:** `29.9.2` (API: `1.56`)
 - **Docker Compose:** v2 plugin installed
 - **Daemon Configuration:** Restricted socket `/var/run/docker.sock` (mode `0660`, group `docker`), no TCP listeners (`0.0.0.0:2375`/`2376` absent).
 - **Management Project Location:** `/opt/vextersoft/management`
