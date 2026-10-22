@@ -5,6 +5,7 @@
 
 ## Completed and verified phases
 
+- Bootstrap plan audit and execution DAG (Issue #2 / PR #8) refreshed and rebased against main.
 - Windows/WSL operator environment and Ansible workflow were established.
 - Baseline hardening was applied and verified on the initial Ubuntu 24.04 VPS.
 - Docker Engine and the Compose plugin were installed through Ansible; the Docker phase completed at `f5c08cb` and was merged to main in commit `7b25538`.

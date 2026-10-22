@@ -28,3 +28,4 @@ Thumbs.db
 scripts/github_issues.py
 ansible/inventory/hosts.yml
 logs/
+docs/vps-inspection-raw.txt

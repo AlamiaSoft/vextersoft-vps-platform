@@ -1,11 +1,11 @@
 # Infrastructure Inventory & Host Baseline
 
-**Host Identifier:** `vmi3682629`  
-**Provider:** Contabo Cloud VPS 6 (Provisioned October 2026)  
-**Public IPv4:** `5.189.128.157/18`  
-**Public IPv6:** `2a02:c207:2368:2629::1/64`  
-**Inspection Date:** 2026-10-21  
-**Inspection Type:** Read-Only Non-Destructive Audit  
+**Host Identifier:** `vmi3682629`
+**Provider:** Contabo Cloud VPS 6 (Provisioned October 2026)
+**Public IPv4:** `<TARGET_HOST_IPV4>` (Refer to private inventory / `.env`)
+**Public IPv6:** `<TARGET_HOST_IPV6>`
+**Inspection Date:** 2026-10-21
+**Inspection Type:** Read-Only Non-Destructive Audit
 
 ---
 
@@ -37,10 +37,10 @@
 ---
 
 ## 4. Networking & DNS
-- **Default Gateway:** `5.189.128.1` via `eth0`
+- **Default Gateway:** `<TARGET_DEFAULT_GATEWAY>` via `eth0`
 - **Network Interfaces:**
   - `lo`: `127.0.0.1/8`, `::1/128`
-  - `eth0`: `5.189.128.157/18`, `2a02:c207:2368:2629::1/64`
+  - `eth0`: `<TARGET_HOST_IPV4>`, `<TARGET_HOST_IPV6>`
 - **DNS Resolver:** `systemd-resolved` active on `127.0.0.53:53` and `127.0.0.54:53`
 
 ---
