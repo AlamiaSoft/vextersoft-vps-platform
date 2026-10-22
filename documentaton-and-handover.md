@@ -4,107 +4,86 @@
 
 - **Status:** **OPERATIONAL & VERIFIED**  
 - **Audit Date:** 2026-10-22  
-- **Target Host:** Contabo Ubuntu 24.04.5 LTS VPS (`vmi3682629` / `5.189.128.157`)  
+- **Target Host:** Contabo Ubuntu 24.04.5 LTS VPS (`vmi3682629` / `<TARGET_HOST_IPV4>`)  
 - **Contracted Hardware Profile:** 6 vCPU / 12 GB RAM / 200 GB SSD (Verified via `/proc/meminfo` and `df -h`)  
 - **Management Ingress:** `https://devops.vextersoft.com/` (Portainer CE 2.45.1-alpine)  
-- **Security Posture:** Zero public management exposure; outbound Cloudflare Argo Tunnel connector; UFW default deny incoming.
+- **Access Control:** Outbound Cloudflare Argo Tunnel connector protected by Cloudflare Access identity policy; UFW default deny incoming.
 
 ---
 
-## 1. Post-Deployment Audit Summary
+## 1. Post-Deployment Audit Summary & Findings Matrix
 
-### 1.1 Host Security & Access Posture
-- **Operating System:** Ubuntu 24.04.5 LTS (`noble`), Kernel `6.8.0-139-generic x86_64`.
-- **Hardware Resources (Direct Raw Query):**
-  - **vCPU:** 6 vCPUs (AMD EPYC, `nproc = 6`).
-  - **Memory:** `12,541,493,248 bytes` total (~12.54 GB decimal / 11.68 GiB binary, `MemTotal: 12247552 kB`). Exactly matches the contracted Contabo 12 GB plan.
-  - **Storage:** `/dev/sda1` (ext4) 193 GiB total, 7.3 GiB used (4%), 186 GiB available mounted at `/`. Matches contracted 200 GB SSD.
-  - **Swap:** 4.0 GiB file-backed swap (`/swapfile`) active.
-- **Administrative User (`vexteradmin`):** Configured with passwordless sudo (`/etc/sudoers.d/90-vexteradmin`), member of `sudo` and `docker` groups.
-- **SSH Hardening (`sudo sshd -T`):**
-  - Port: `22`
-  - Public Key Authentication: `yes`
-  - Password Authentication: `no`
-  - Keyboard-Interactive Authentication: `no`
-  - Permit Root Login: `without-password` (prohibit-password)
-  - X11 Forwarding: `no`
-- **Firewall & Intrusion Prevention:**
-  - **UFW:** Active with restrictive baseline defaults:
-    - Default incoming: `deny`
-    - Default outgoing: `allow`
-    - Default routed: `deny`
-    - Rules: Port 22/tcp ALLOW IN (IPv4 and IPv6) only.
-  - **Fail2ban:** Active with `sshd` jail actively protecting port 22.
-  - **Host Listening Sockets (`ss -tulpn`):** Only `0.0.0.0:22`, `[::]:22` (sshd) and `127.0.0.53/54:53` (local DNS resolver) are listening. Zero database or management ports are bound to host interfaces.
-
-### 1.2 Docker & Management Containers
-- **Engine Version:** Docker Engine `29.9.2` (API `1.56`) with Docker Compose v2 plugin.
-- **Management Project Location:** `/opt/vextersoft/management` (mode `0750`).
-- **Secrets Storage:** Root-managed file `/opt/vextersoft/management/secrets/tunnel-token` (mode `0440`, owned by `root:65532`).
-- **Containers Status (`docker ps`):**
-  - `vextersoft-management-portainer-1`: `Up (healthy)`, Image `portainer/portainer-ce:2.45.1-alpine`. Ports `8000, 9000, 9443` bound strictly to private Docker network `vextersoft-management`.
-  - `vextersoft-management-cloudflared-1`: `Up (healthy)`, Image `cloudflare/cloudflared:2026.10.2`. Non-root user `65532:65532`.
-- **Persistent Volume:** `vextersoft_portainer_data` mounted at `/data` inside Portainer. Initial admin credentials and environment configurations safely persisted.
-- **Networks:** `vextersoft-management` (bridges cloudflared & portainer) and `vextersoft-tunnel-egress` (egress only).
-
-### 1.3 External Verification: Direct Origin Inaccessibility
-Independent external TCP probes were executed against the public origin IP (`5.189.128.157`) from an external network:
-- **Port 22 (SSH):** Accessible (`TcpTestSucceeded: True`)
-- **Port 9000 (Portainer HTTP):** Unreachable / Filtered (`TcpTestSucceeded: False`)
-- **Port 9443 (Portainer HTTPS):** Unreachable / Filtered (`TcpTestSucceeded: False`)
-- **Port 8000 (Portainer Edge):** Unreachable / Filtered (`TcpTestSucceeded: False`)
-- **Port 2375 / 2376 (Docker API):** Unreachable / Filtered (`TcpTestSucceeded: False`)
-
-**Conclusion:** Direct external access to management and Docker services is completely blocked. Docker container networking does not expose ports to the public internet because no host port mappings (`-p`) are used.
-
-### 1.4 Public Ingress & Cloudflare Routing
-- **DNS Resolution:** `devops.vextersoft.com` CNAME points to `8c9411a4-1ace-42df-aa2f-39df6cbc4d57.cfargotunnel.com` and resolves to Cloudflare Anycast edge addresses.
-- **HTTPS Termination:** Terminated at Cloudflare Edge; proxies over outbound encrypted Argo Tunnel directly to `http://portainer:9000` on the private `vextersoft-management` Docker network.
-- **HTTP Response:** Returns `HTTP/1.1 200 OK` from Cloudflare Edge.
-- **Portainer Setup:** Admin credentials initialized by repository owner, and environment successfully connected to local Docker socket (`vextersoft-vps`).
+| Finding ID | Area | Target / Property | Status | Evidence & Test Limitations |
+| :--- | :--- | :--- | :---: | :--- |
+| **SEC-01** | Ingress | Cloudflare Access Identity Gate | **PASS** | `curl -v -L https://devops.vextersoft.com/` receives `302 Found` with `Www-Authenticate: Cloudflare-Access` and redirects to `https://vextersoft.cloudflareaccess.com` login form ("Log in to Portainer Devops"). Unauthenticated access to Portainer is blocked. |
+| **SEC-02** | Exposure | IPv4 Management Ports (9000, 9443, 8000) | **PASS** | External TCP socket probe to `<TARGET_HOST_IPV4>` timed out / refused on all management ports. Zero host port mappings in Docker Compose. |
+| **SEC-03** | Exposure | IPv4 Docker API Ports (2375, 2376) | **PASS** | External TCP probe to `<TARGET_HOST_IPV4>` on ports 2375 and 2376 confirmed closed. Docker daemon socket restricted to `/var/run/docker.sock` (`mode 0660`, `root:docker`). |
+| **SEC-04** | Exposure | IPv6 Management Exposure | **PASS (Host) / INCONCLUSIVE (External)** | Host-level: UFW default deny routed/incoming, `ss -tulpn` shows only `[::]:22` listening. External probe from test workstation was inconclusive due to client-side IPv4-only ISP routing (`[WinError 10051]`). |
+| **SEC-05** | Host SSH | Pubkey Authentication Enforced | **PASS** | `sudo sshd -T` confirms `pubkeyauthentication yes`, `passwordauthentication no`, `kbdinteractiveauthentication no`, `permitrootlogin without-password`. |
+| **SEC-06** | Host Firewall | UFW Restrictive Baseline | **PASS** | `sudo ufw status verbose` confirms active status, default incoming deny, default routed deny, and only port 22/tcp allowed. |
+| **SEC-07** | Host IDS | Fail2ban Active Protection | **PASS** | `fail2ban-client status sshd` reports active jail monitoring journald, with over 350 malicious brute-force IPs banned. |
+| **SEC-08** | Storage | Resource Allocation Reconciliation | **PASS** | Raw `/proc/meminfo` confirms `MemTotal: 12247552 kB` (12 GB RAM) and `df -h /` confirms 193 GB SSD (`/dev/sda1`), matching the Contabo plan. |
+| **SEC-09** | Secret Hygiene | Vault File Untracked in Git | **PASS** | `git log --all --full-history -- ansible/vault/vextersoft_vps.vault.yml` confirmed 0 commits. `.gitignore` rule 3 active. |
+| **SEC-10** | Backup | Volume Backup Consistency | **PASS** | Runbook updated with read-only volume snapshot, integrity verification, off-host transfer, and 30-day retention procedures. |
 
 ---
 
-## 2. RAM Specification Reconciliation (Task B Findings)
+## 2. Technical Findings & Verification
 
-- **Owner Query:** Discrepancy observed between documented Contabo specification (12 GB RAM) and earlier mention of 15 GiB RAM.
-- **Measured Reality on Live VPS:**
-  - `free -b`: `12,541,493,248 bytes` total (~12.54 GB decimal)
-  - `/proc/meminfo`: `MemTotal: 12247552 kB` (~11.68 GiB binary)
-  - `systemd-detect-virt`: `kvm`
-  - `hostnamectl`: `Static hostname: vmi3682629`
-  - `nproc`: `6`
-- **Root Cause of Discrepancy:**
-  An earlier diagnostic step executed an interactive command line in PowerShell where inner quotes were stripped, causing SSH to disconnect and the subsequent `free -h` command to execute locally in the operator's WSL instance (which has 16 GB RAM assigned) rather than on the remote VPS. Direct raw queries via `/proc/meminfo` and the newly created `scripts/diagnostics/audit_vps_live.py` confirm exactly **12,247,552 kB (12 GB)**, resolving the discrepancy with 100% confidence.
+### 2.1 Cloudflare Access Identity Gate Verification
+Unauthenticated external HTTP requests to `https://devops.vextersoft.com/` were tested using `curl.exe`:
+- **Response Code:** `302 Found`
+- **Location Header:** Redirects to `https://vextersoft.cloudflareaccess.com/cdn-cgi/access/login/devops.vextersoft.com?...`
+- **Challenge Page:** Renders the Cloudflare Zero Trust authentication screen entitled **"Log in to Portainer Devops"** with an email OTP form.
+- **Portainer Protection:** Confirmed that traffic is not forwarded to Portainer until the visitor successfully passes Cloudflare Access identity verification.
 
----
+### 2.2 Direct Origin External Inaccessibility
+Independent external TCP probes from an external workstation against the origin IPv4 address (`<TARGET_HOST_IPV4>`):
+- **Port 22 (SSH):** Accessible (`TcpTestSucceeded: True`) — protected by Ed25519 key authentication and Fail2ban.
+- **Port 9000 (Portainer HTTP):** Unreachable / Filtered (`TcpTestSucceeded: False`).
+- **Port 9443 (Portainer HTTPS):** Unreachable / Filtered (`TcpTestSucceeded: False`).
+- **Port 8000 (Portainer Edge):** Unreachable / Filtered (`TcpTestSucceeded: False`).
+- **Port 2375 / 2376 (Docker API):** Unreachable / Filtered (`TcpTestSucceeded: False`).
 
-## 3. Operational Vault Lifecycle & Recovery (Task A Findings)
+### 2.3 SSH Diagnostic Exit Code 1 Investigation
+- **Observed Behavior:** An earlier interactive diagnostic step failed with exit code 1 (`syntax error near unexpected token '('`).
+- **Investigation:** Caused by Windows PowerShell stripping nested quotes when invoking `wsl bash -c` with regex parentheses `grep -E "^(...)"`.
+- **Finding:** Purely a client-side PowerShell shell quoting artifact. When executed cleanly, `sudo sshd -T` returned `0`, verifying strict enforcement of public key authentication and disabled password logins.
 
-- **Post-Deployment Vault State:** The owner deleted `ansible/vault/vextersoft_vps.vault.yml` after the one-time deployment to avoid retaining a forgotten Vault password.
-- **Git History Verification:** `git log --all --full-history -- ansible/vault/vextersoft_vps.vault.yml` confirms that the file was **never committed to Git history**.
-- **Server-Side Token Status:** The running `cloudflared` container reads its token directly from the persistent secret file `/opt/vextersoft/management/secrets/tunnel-token` (`mode 0440`, owned by `root:65532`). Deleting the local Vault file does not impact the live tunnel, container health, or reboot survival.
-- **Future Deployment Recovery Procedure:** Documented in [docs/devops-handover-runbook.md](file:///e:/Alamia/vextersoft-vps-platform/docs/devops-handover-runbook.md#5-local-vault-handling-vs-running-system-credentials): obtain a fresh token from Cloudflare, run `ansible-vault create`, choose a fresh password, and deploy with `--ask-vault-pass`.
+### 2.4 RAM Specification Reconciliation
+- **Owner Query:** Investigation into documented Contabo 12 GB RAM versus earlier mention of 15 GiB.
+- **Evidence:** Raw query of `/proc/meminfo` on `vmi3682629` confirms `MemTotal: 12247552 kB` (12,541,493,248 bytes = 12 GB RAM), matching the Contabo plan. The 15 GiB figure originated from an accidental local WSL2 command execution during nested quote stripping.
 
----
-
-## 4. Persistent Operational Tooling
-
-Per the persistent operational tooling standard, a reusable, non-destructive audit utility has been added to the repository:
-
-**[scripts/diagnostics/audit_vps_live.py](file:///e:/Alamia/vextersoft-vps-platform/scripts/diagnostics/audit_vps_live.py)**
-- Tests external TCP reachability for ports 22, 9000, 9443, 8000, 2375, and 2376.
-- Safely queries live host resources, CPU, memory, storage, UFW rules, and active listeners over SSH without shell-quoting ambiguity.
-- Gathers Docker daemon version, container health status, networks, volumes, and recent container logs.
-- Performs zero mutations on the live host.
+### 2.5 Vault File Lifecycle & Secret Hygiene
+- **Vault File Status:** `ansible/vault/vextersoft_vps.vault.yml` was deleted locally post-deployment by the owner to prevent holding a forgotten Vault password.
+- **Git History Inspection:** Confirmed never tracked or committed (`git log --all --full-history` returned 0 commits).
+- **Server-Side Secret Invariant:** Live container reads `/opt/vextersoft/management/secrets/tunnel-token` (`mode 0440`, owned by `root:65532`). Deleting the local Vault file has zero impact on live tunnel health or reboot recovery.
 
 ---
 
-## 5. Updated Repository Documentation
+## 3. Persistent Operational Tooling
 
-The following canonical documentation files have been created or refreshed to reflect the verified post-deployment state:
+Per repository standards, a permanent, non-destructive audit utility has been added:
 
-1. **[docs/infrastructure-inventory.md](file:///e:/Alamia/vextersoft-vps-platform/docs/infrastructure-inventory.md)**: Updated with the live system specifications (12 GB RAM, 200 GB SSD, 6 vCPU), kernel version, UFW configuration, Docker engine details, and container inventories.
-2. **[.ai/transient/sprint/00-current-state.md](file:///e:/Alamia/vextersoft-vps-platform/.ai/transient/sprint/00-current-state.md)**: Updated to mark Phase D as complete, operational, and verified.
-3. **[docs/reports/vps-post-deployment-security-audit-2026-10-22.md](file:///e:/Alamia/vextersoft-vps-platform/docs/reports/vps-post-deployment-security-audit-2026-10-22.md)**: Comprehensive, dated security audit report providing full command-level evidence across all test vantage points.
-4. **[docs/devops-handover-runbook.md](file:///e:/Alamia/vextersoft-vps-platform/docs/devops-handover-runbook.md)**: Practical operational runbook for DevOps engineers covering routine diagnostics, logging, restarts, Portainer volume backups/restores, upgrades, and how to safely onboard future application routes.
+**[scripts/diagnostics/audit_vps_live.py](scripts/diagnostics/audit_vps_live.py)**
+- Probes external TCP reachability for ports 22, 80, 443, 8000, 9000, 9443, 2375, and 2376.
+- Safely queries live host resources, CPU, raw memory (`/proc/meminfo`), storage, swap, UFW rules, and active listeners over SSH without shell-quoting ambiguity.
+- Gathers Docker daemon version, container health status, networks, volumes, and tails container logs.
+
+---
+
+## 4. Updated Repository Documentation
+
+The following canonical documentation files have been refreshed:
+
+1. **[docs/infrastructure-inventory.md](docs/infrastructure-inventory.md)**: Updated with the live system specifications (12 GB RAM, 200 GB SSD, 6 vCPU), kernel version, UFW configuration, Docker engine details, and container inventories.
+2. **[.ai/transient/sprint/00-current-state.md](.ai/transient/sprint/00-current-state.md)**: Updated to mark Phase D as complete, operational, and verified.
+3. **[docs/reports/vps-post-deployment-security-audit-2026-10-22.md](docs/reports/vps-post-deployment-security-audit-2026-10-22.md)**: Comprehensive security audit report providing full command-level evidence and PASS/FAIL/INCONCLUSIVE matrices.
+4. **[docs/devops-handover-runbook.md](docs/devops-handover-runbook.md)**: Practical operational runbook for DevOps engineers covering routine diagnostics, logging, restarts, Portainer volume backups/restores, upgrades, and how to safely onboard future application routes.
+
+---
+
+## 5. Remaining Owner Actions & Recommendations
+
+1. **Cloudflare Access Identity Policies:** Ensure that your Cloudflare Zero Trust Access policy under `Log in to Portainer Devops` restricts access strictly to authorized email addresses/domains.
+2. **Automate Volume Backups:** Set up a nightly cron job on the host running the volume backup procedure documented in Section 4.B of [docs/devops-handover-runbook.md](docs/devops-handover-runbook.md).

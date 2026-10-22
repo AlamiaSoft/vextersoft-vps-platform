@@ -1,7 +1,7 @@
 # DevOps Engineer Operational Handover Playbook
 
 **Platform:** VexterSoft Cloud VPS Platform  
-**Target Environment:** Contabo Ubuntu 24.04 LTS VPS (`vmi3682629` / `5.189.128.157`)  
+**Target Environment:** Contabo Ubuntu 24.04 LTS VPS (`vmi3682629` / `<TARGET_HOST_IPV4>`)  
 **Host Profile:** 6 vCPU / 12 GB RAM / 200 GB SSD  
 **Management Console:** `https://devops.vextersoft.com`  
 **Last Updated:** 2026-10-22  
@@ -16,10 +16,10 @@
               ▼ HTTPS (TCP 443)
 [ Cloudflare Edge / Anycast ]
               │
-              ├─> Cloudflare Access (Identity & SSO Gate)
+              ├─> Cloudflare Access (Identity & SSO Gate - Portainer Devops)
               │
               ▼ Cloudflare Argo Tunnel (Encrypted Outbound Egress)
-[ VPS Host (5.189.128.157) ]
+[ VPS Host (<TARGET_HOST_IPV4>) ]
   ├── UFW: Port 22 ALLOW only (9000, 9443, 8000, 2375 BLOCKED)
   │
   └── Docker Engine (v29.9.2)
@@ -73,11 +73,11 @@ All commands in this section are **strictly read-only** and can be run at any ti
 The repository includes a dedicated, non-destructive audit tool that inspects external port exposure and queries live host resources, Docker containers, and logs:
 
 ```bash
-# Run from Windows PowerShell or WSL
+# Run from repository root (discovers target from .env)
 python scripts/diagnostics/audit_vps_live.py
 ```
 This tool verifies:
-- External accessibility of ports 22, 9000, 9443, 8000, 2375, and 2376.
+- External accessibility of ports 22, 80, 443, 9000, 9443, 8000, 2375, and 2376.
 - Host identity, CPU, raw memory (`/proc/meminfo`), and swap status.
 - UFW rules, Fail2ban status, and active socket listeners.
 - Docker containers, volumes, networks, and recent container logs.
@@ -91,65 +91,109 @@ powershell -ExecutionPolicy Bypass -File scripts/vextersoft.ps1 validate -Phase 
 ### C. Direct Container & Service Status (via SSH)
 ```bash
 # Check management containers health and status
-ssh vexteradmin@5.189.128.157 "sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+ssh vexteradmin@$TARGET_HOST "sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
 
 # Check container resource utilization
-ssh vexteradmin@5.189.128.157 "sudo docker stats --no-stream"
+ssh vexteradmin@$TARGET_HOST "sudo docker stats --no-stream"
 
 # Inspect Docker volumes and networks
-ssh vexteradmin@5.189.128.157 "sudo docker network ls && sudo docker volume ls"
+ssh vexteradmin@$TARGET_HOST "sudo docker network ls && sudo docker volume ls"
 ```
 
 ### D. Reading Container Logs Safely
 ```bash
 # View Cloudflare Tunnel connector logs (last 50 lines)
-ssh vexteradmin@5.189.128.157 "sudo docker logs --tail 50 vextersoft-management-cloudflared-1"
+ssh vexteradmin@$TARGET_HOST "sudo docker logs --tail 50 vextersoft-management-cloudflared-1"
 
 # View Portainer server logs (last 50 lines)
-ssh vexteradmin@5.189.128.157 "sudo docker logs --tail 50 vextersoft-management-portainer-1"
+ssh vexteradmin@$TARGET_HOST "sudo docker logs --tail 50 vextersoft-management-portainer-1"
 ```
 
 ---
 
-## 4. Maintenance & Lifecycle Operations
+## 4. Maintenance, Backup & Recovery Lifecycle
 
 ### A. Restarting the Management Stack
 If Portainer or Cloudflare Tunnel needs to be restarted:
 ```bash
 # Restart without modifying volumes or configuration
-ssh vexteradmin@5.189.128.157 "sudo docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml restart"
+ssh vexteradmin@$TARGET_HOST "sudo docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml restart"
 ```
 
-### B. Backing up Portainer Persistent Data
-Portainer stores its database (`portainer.db`), TLS keys, and settings inside the named Docker volume `vextersoft_portainer_data`.
+### B. Portainer Persistent Data Backup Procedure
+Portainer stores its database (`portainer.db`), TLS certificates, and configurations in the named Docker volume `vextersoft_portainer_data`.
 
-To create a consistent, verified tarball backup:
+#### Step 1: Ensure Consistency
+To guarantee database consistency without in-flight writes, briefly pause or stop Portainer (or mount the volume `:ro`):
 ```bash
-# Run backup helper container to export the volume to a compressed archive
-ssh vexteradmin@5.189.128.157 "sudo docker run --rm \
+# Option 1: Live read-only snapshot (zero downtime)
+ssh vexteradmin@$TARGET_HOST "sudo docker run --rm \
   -v vextersoft_portainer_data:/source:ro \
   -v /var/backups:/backup \
-  alpine:latest tar -czf /backup/portainer-data-\$(date +%Y%m%d-%H%M%S).tar.gz -C /source ."
+  alpine:latest tar -czf /backup/portainer-backup-\$(date +%Y%m%d-%H%M%S).tar.gz -C /source ."
 
-# Verify backup archive exists and is non-empty
-ssh vexteradmin@5.189.128.157 "ls -lh /var/backups/portainer-data-*.tar.gz"
+# Option 2: Quiesced backup (recommended before major upgrades)
+ssh vexteradmin@$TARGET_HOST "sudo docker stop vextersoft-management-portainer-1 && \
+  sudo docker run --rm -v vextersoft_portainer_data:/source:ro -v /var/backups:/backup alpine:latest tar -czf /backup/portainer-backup-\$(date +%Y%m%d-%H%M%S).tar.gz -C /source . && \
+  sudo docker start vextersoft-management-portainer-1"
 ```
 
-### C. Restoring Portainer Data from Backup
+#### Step 2: Integrity Verification
+Verify that the archive is non-empty and uncorrupted:
+```bash
+ssh vexteradmin@$TARGET_HOST "tar -tzf /var/backups/portainer-backup-*.tar.gz | grep portainer.db && echo 'BACKUP INTEGRITY VERIFIED'"
+```
+
+#### Step 3: Off-Host Storage Transfer
+Never rely solely on backups stored on the same VPS disk. Pull the verified backup to an off-host workstation or backup server:
+```bash
+# Pull archive to local operator workstation
+scp vexteradmin@$TARGET_HOST:/var/backups/portainer-backup-*.tar.gz ./backups/
+```
+
+#### Step 4: Retention Policy
+Maintain a 30-day rolling retention on the VPS disk to prevent unbounded storage consumption:
+```bash
+# Delete backups older than 30 days
+ssh vexteradmin@$TARGET_HOST "find /var/backups -name 'portainer-backup-*.tar.gz' -mtime +30 -delete"
+```
+
+### C. Portainer Restoration & Recovery Testing
+To test or execute a restoration without corrupting live data:
+
+#### Test Restoration into a Sandbox Volume:
+```bash
+# 1. Create a temporary test volume
+ssh vexteradmin@$TARGET_HOST "sudo docker volume create portainer_data_restore_test"
+
+# 2. Extract backup into the test volume
+ssh vexteradmin@$TARGET_HOST "sudo docker run --rm \
+  -v portainer_data_restore_test:/target \
+  -v /var/backups:/backup \
+  alpine:latest tar -xzf /backup/<BACKUP_FILE_NAME>.tar.gz -C /target"
+
+# 3. Verify files and permissions in the test volume
+ssh vexteradmin@$TARGET_HOST "sudo docker run --rm -v portainer_data_restore_test:/data alpine:latest ls -la /data"
+
+# 4. Clean up test volume
+ssh vexteradmin@$TARGET_HOST "sudo docker volume rm portainer_data_restore_test"
+```
+
+#### Production Restoration:
 1. Stop the Portainer container:
    ```bash
-   ssh vexteradmin@5.189.128.157 "sudo docker stop vextersoft-management-portainer-1"
+   ssh vexteradmin@$TARGET_HOST "sudo docker stop vextersoft-management-portainer-1"
    ```
-2. Restore archive into volume:
+2. Restore archive into the production volume:
    ```bash
-   ssh vexteradmin@5.189.128.157 "sudo docker run --rm \
+   ssh vexteradmin@$TARGET_HOST "sudo docker run --rm \
      -v vextersoft_portainer_data:/target \
      -v /var/backups:/backup \
      alpine:latest sh -c 'rm -rf /target/* && tar -xzf /backup/<BACKUP_FILE_NAME>.tar.gz -C /target'"
    ```
 3. Restart Portainer container:
    ```bash
-   ssh vexteradmin@5.189.128.157 "sudo docker start vextersoft-management-portainer-1"
+   ssh vexteradmin@$TARGET_HOST "sudo docker start vextersoft-management-portainer-1"
    ```
 
 ---

@@ -101,7 +101,7 @@
   - `0.0.0.0:22`, `[::]:22` (sshd)
   - `127.0.0.53:53`, `127.0.0.54:53` (systemd-resolved)
   - Zero other TCP/UDP ports listening on host interfaces.
-- **External Network Audit (Direct Origin Scan on `5.189.128.157`):**
+- **External Network Audit (Direct Origin Scan on `<TARGET_HOST_IPV4>`):**
   - Port 22 (SSH): Accessible
   - Port 9000 (Portainer HTTP): Closed / Unreachable
   - Port 9443 (Portainer HTTPS): Closed / Unreachable

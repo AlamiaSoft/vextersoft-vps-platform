@@ -12,14 +12,26 @@ Usage:
 
 import argparse
 import base64
-import json
+import os
+import re
 import socket
 import subprocess
 import sys
 from pathlib import Path
 
 
-DEFAULT_TARGET_IP = "5.189.128.157"
+def load_env_ip() -> str:
+    """Attempts to discover target IP from repository root .env file."""
+    repo_root = Path(__file__).resolve().parents[2]
+    env_file = repo_root / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("VPS_IP="):
+                return line.split("=", 1)[1].strip("'\"")
+    return ""
+
+
 DEFAULT_TARGET_USER = "vexteradmin"
 
 REMOTE_AUDIT_SCRIPT = """#!/bin/bash
@@ -39,6 +51,9 @@ free -h
 echo "=== SECTION: STORAGE & SWAP ==="
 df -h /
 swapon --show || true
+
+echo "=== SECTION: NETWORK & IPV6 ==="
+ip -br addr || true
 
 echo "=== SECTION: FIREWALL & LISTENING PORTS ==="
 sudo ufw status verbose || true
@@ -79,9 +94,10 @@ def run_remote_diagnostics(target_ip: str, user: str) -> str:
     return res.stdout
 
 
-def probe_external_port(host: str, port: int, timeout: float = 3.0) -> bool:
+def probe_external_port(host: str, port: int, is_ipv6: bool = False, timeout: float = 2.5) -> bool:
     """Checks if a TCP port is reachable from this external vantage point."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:
         sock.connect((host, port))
@@ -97,6 +113,8 @@ def audit_external_network(target_ip: str) -> dict:
     """Performs external TCP probing on standard management and daemon ports."""
     ports_to_check = {
         22: "SSH Administrative Port",
+        80: "HTTP Web Standard",
+        443: "HTTPS Web Standard",
         9000: "Portainer Internal HTTP",
         9443: "Portainer Internal HTTPS",
         8000: "Portainer Edge Tunnel",
@@ -104,8 +122,9 @@ def audit_external_network(target_ip: str) -> dict:
         2376: "Docker Daemon TLS API",
     }
     results = {}
+    is_ipv6 = ":" in target_ip
     for port, label in ports_to_check.items():
-        is_open = probe_external_port(target_ip, port)
+        is_open = probe_external_port(target_ip, port, is_ipv6=is_ipv6)
         results[port] = {
             "label": label,
             "open": is_open,
@@ -115,13 +134,18 @@ def audit_external_network(target_ip: str) -> dict:
 
 
 def main():
+    discovered_ip = load_env_ip()
     parser = argparse.ArgumentParser(description="Live VPS Diagnostic Audit Tool")
-    parser.add_argument("--target-ip", default=DEFAULT_TARGET_IP, help="Target VPS IP address")
+    parser.add_argument("--target-ip", default=discovered_ip, help="Target VPS IP address (default: from .env)")
     parser.add_argument("--user", default=DEFAULT_TARGET_USER, help="SSH user (default: vexteradmin)")
     parser.add_argument("--json", action="store_true", help="Output results in JSON format")
     args = parser.parse_args()
 
-    print(f"[*] Starting non-destructive live audit against {args.target_ip} ({args.user})...\n")
+    if not args.target_ip:
+        print("Error: Target IP not specified and could not be discovered from .env. Pass --target-ip.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[*] Starting non-destructive live audit against target ({args.user})...\n")
 
     # 1. External Network Probe
     print("--- 1. External Network Exposure Audit ---")
