@@ -42,7 +42,7 @@ services:
     networks:
       - management
       - tunnel_egress
-{% for route_network in cloudflare_public_routes | map(attribute='network') | unique | list %}
+{% for route_network in cloudflare_public_routes_effective | map(attribute='network') | unique | list %}
       - app_{{ loop.index }}
 {% endfor %}
     healthcheck:
@@ -71,7 +71,7 @@ networks:
   tunnel_egress:
     external: true
     name: "{{ cloudflare_tunnel_egress_network }}"
-{% for route_network in cloudflare_public_routes | map(attribute='network') | unique | list %}
+{% for route_network in cloudflare_public_routes_effective | map(attribute='network') | unique | list %}
   app_{{ loop.index }}:
     external: true
     name: "{{ route_network }}"
