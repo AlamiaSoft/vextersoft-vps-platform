@@ -253,7 +253,7 @@ ansible -i "$INVENTORY" "$HOST_ALIAS" -m shell -a 'set -e; test "$(systemctl is-
 '@
     } else {
         $verify = @'
-ansible -i "$INVENTORY" "$HOST_ALIAS" -m shell -a 'set -e; for name in vextersoft-management-portainer-1 vextersoft-management-cloudflared-1; do state=$(docker inspect --format "{{ "{{" }}.State.Status{{ "}}" }} {{ "{{" }}.State.Health.Status{{ "}}" }}" "$name"); test "$state" = "running healthy"; done; docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml ps; ss -lnt; ufw status verbose'
+ansible -i "$INVENTORY" "$HOST_ALIAS" -m shell -a 'set -e; format=$(printf "\\173\\173.State.Status\\175\\175 \\173\\173.State.Health.Status\\175\\175"); for name in vextersoft-management-portainer-1 vextersoft-management-cloudflared-1; do state=$(docker inspect --format "$format" "$name"); test "$state" = "running healthy"; done; docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml ps; ss -lnt; ufw status verbose'
 '@
     }
     Invoke-Wsl ((Get-Prefix) + [Environment]::NewLine + $targetDetails + [Environment]::NewLine + $verify)

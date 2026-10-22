@@ -60,7 +60,7 @@
           - --quiet
           - --extended-regexp
           - '^\$ANSIBLE_VAULT;'
-          - "{{ inventory_dir }}/host_vars/{{ inventory_hostname }}/vault.yml"
+          - "{{ playbook_dir }}/../vault/{{ inventory_hostname }}.vault.yml"
       register: cloudflare_vault_header_check
       changed_when: false
       failed_when: false
@@ -73,12 +73,12 @@
         that:
           - cloudflare_vault_header_check.rc == 0
         fail_msg: >-
-          The per-host vault.yml is missing or is not encrypted with Ansible Vault.
-          Store cloudflare_tunnel_token only in that encrypted file.
+          The per-host Ansible Vault file is missing or is not encrypted.
+          Store cloudflare_tunnel_token only in ansible/vault/<alias>.vault.yml.
 
     - name: Load tunnel credential only from the encrypted per-host vault file
       ansible.builtin.include_vars:
-        file: "{{ inventory_dir }}/host_vars/{{ inventory_hostname }}/vault.yml"
+        file: "{{ playbook_dir }}/../vault/{{ inventory_hostname }}.vault.yml"
         name: cloudflare_vault
       no_log: true
 
@@ -93,7 +93,7 @@
           - cloudflare_vault.cloudflare_tunnel_token | trim is not search('\s')
         fail_msg: >-
           Configure the per-host management hostname in ignored cloudflare.yml and
-          store the Tunnel token only in the encrypted per-host vault.yml file.
+          store the Tunnel token only in the encrypted ansible/vault file.
       no_log: true
 
     - name: Validate explicitly configured public application routes

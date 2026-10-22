@@ -47,7 +47,7 @@ Edit the non-secret file to set that server's management hostname and optional p
 Create the encrypted secret file with the WSL editor:
 
 ```bash
-ansible-vault create ansible/inventory/host_vars/vextersoft_vps/vault.yml
+ansible-vault create ansible/vault/vextersoft_vps.vault.yml
 ```
 
 Enter only this YAML variable in the editor, substituting the tunnel token locally:
@@ -58,9 +58,16 @@ cloudflare_tunnel_token: "PASTE_THE_TUNNEL_TOKEN_IN_THE_EDITOR"
 
 Save and close the editor. The file is ignored by Git and encrypted by Ansible Vault. Do not put the token in chat, shell arguments, environment variables, Compose files, issue comments, or logs. The deployment copies it to a root-owned, read-only host file and mounts it into cloudflared as a file secret. Tasks touching the token suppress both logs and diffs. Cloudflare supports `--token-file` for remotely managed tunnels with cloudflared 2025.4.0 and later ([run parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/)).
 
-The playbook verifies that `vault.yml` begins with the Ansible Vault encryption header and loads the token into a dedicated `cloudflare_vault` namespace. It does not accept a plaintext token variable from inventory or the command line. Keep the management hostname and route list in the ignored `cloudflare.yml`; those per-host values override the safe playbook defaults.
+The playbook verifies that the Vault file begins with the Ansible Vault encryption header and loads the token into a dedicated `cloudflare_vault` namespace. It does not accept a plaintext token variable from inventory or the command line. Keep the management hostname and route list in the ignored `cloudflare.yml`; those per-host values override the safe playbook defaults. The encrypted file lives under `ansible/vault/`, outside Ansible's auto-discovered `host_vars`, so normal `ansible-inventory --list`, `doctor`, and `validate` do not need a Vault password or load the credential into inventory JSON.
 
-For another server, create its own host_vars directory and its own tunnel token. Keep hostnames and app routes in that server's ignored `cloudflare.yml`; keep only credentials in its Vault-encrypted `vault.yml`.
+For another server, create its own host_vars directory and its own tunnel token. Keep hostnames and app routes in that server's ignored `cloudflare.yml`; keep only credentials in `ansible/vault/<alias>.vault.yml`. If upgrading from the old location, move the encrypted file without decrypting or displaying it, then remove the old `host_vars/<alias>/vault.yml` before running `doctor` or `validate`:
+
+```bash
+mkdir -p ansible/vault
+mv ansible/inventory/host_vars/vextersoft_vps/vault.yml ansible/vault/vextersoft_vps.vault.yml
+```
+
+Create a new Vault file at the new path with `ansible-vault create ansible/vault/vextersoft_vps.vault.yml`.
 
 ## Validation and deployment
 

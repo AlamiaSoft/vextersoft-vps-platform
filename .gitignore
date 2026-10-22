@@ -1,5 +1,6 @@
 ansible/inventory/host_vars/*/cloudflare.yml
 ansible/inventory/host_vars/*/vault.yml
+ansible/vault/*.vault.yml
 # Environment & Secrets
 .env
 .env.*
