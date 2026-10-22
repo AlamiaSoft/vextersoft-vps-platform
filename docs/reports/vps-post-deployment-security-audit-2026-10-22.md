@@ -2,25 +2,28 @@
 
 **Date of Audit:** 2026-10-22  
 **Target Host Identifier:** `vmi3682629`  
-**Target Host IPv4:** `<TARGET_HOST_IPV4>` (Refer to private inventory / `.env`)  
+**Target Host IPv4:** `<TARGET_HOST_IPV4>` (Resolved via ignored `ansible/inventory/hosts.yml`)  
 **Target Host IPv6:** `<TARGET_HOST_IPV6>`  
 **Management Ingress:** `https://devops.vextersoft.com`  
 **Auditor:** Automated Agentic Security Framework (Antigravity)  
-**Overall Deployment Status:** **OPERATIONAL & VERIFIED**  
+**Overall Deployment Status:** **PARTIALLY VERIFIED (OPERATIONAL — EXTERNAL IPV6 & LIVE BACKUP PROOF PENDING)**  
 
 ---
 
 ## 1. Executive Summary
 
-A comprehensive post-deployment security, host configuration, access control, and network exposure audit was conducted on the VexterSoft Contabo Ubuntu 24.04 LTS VPS following the completion of Phase D (Cloudflare Tunnel + Private Portainer CE Ingress).
+A post-deployment security, host configuration, access control, and network exposure audit was conducted on the VexterSoft Contabo Ubuntu 24.04 LTS VPS following the completion of Phase D (Cloudflare Tunnel + Private Portainer CE Ingress).
 
-All core security invariants have been empirically verified:
+While the management stack is live and all testable controls passed, overall audit sign-off is classified as **PARTIALLY VERIFIED** until two pending operational proofs are completed: (1) an external port scan from an IPv6-native network vantage point, and (2) an executed off-host Portainer volume backup and supervised sandbox restore on the VPS.
+
+Summary of findings:
 1. **Cloudflare Access Verification [PASS]:** Unauthenticated external HTTP requests to `https://devops.vextersoft.com` are intercepted by Cloudflare Edge with a `302 Found` redirect to `vextersoft.cloudflareaccess.com`, demanding email OTP authentication ("Log in to Portainer Devops") before any traffic reaches Portainer.
-2. **Zero Exposed Management Sockets [PASS]:** Ports `9000`, `9443`, `8000`, `2375`, and `2376` are not listening on `0.0.0.0` or `[::]`. They communicate strictly across the isolated internal Docker bridge network `vextersoft-management`.
-3. **Direct Origin Inaccessibility (IPv4) [PASS]:** Independent external TCP socket probes from an external network confirmed that ports 9000, 9443, 8000, 2375, and 2376 are completely closed and unreachable on the origin IPv4 address.
-4. **Direct Origin Inaccessibility (IPv6) [PASS - Host Level / INCONCLUSIVE - External Vantage]:** On the host, UFW denies all routed/incoming IPv6 traffic except port 22; `ss -tulpn` confirms only `[::]:22` is listening. External probing from an IPv4-only test client returned `OSError` (network unreachable); external IPv6 penetration testing from an IPv6-native external vantage point remains not tested.
-5. **Host Hardening Baseline [PASS]:** UFW is active with `default deny incoming`, `default allow outgoing`, and `default deny routed`. Fail2ban `sshd` jail is actively monitoring systemd journal logs. SSH password and keyboard-interactive authentication are disabled; only Ed25519 cryptographic key authentication is permitted.
+2. **Zero Exposed Management Sockets [PASS]:** Ports `9000`, `9443`, `8000`, `2375`, and `2376` are not listening on `0.0.0.0`, `[::]`, or `127.0.0.1` on the host. Container communication occurs strictly across the isolated internal Docker bridge network `vextersoft-management`.
+3. **Direct Origin Inaccessibility (IPv4) [PASS]:** Independent external TCP socket probes from an external network confirmed that ports 80, 443, 9000, 9443, 8000, 2375, and 2376 are closed/unreachable on `<TARGET_HOST_IPV4>`.
+4. **Direct Origin Inaccessibility (IPv6) [PENDING / INCONCLUSIVE - External Vantage · PASS - Host Inspection]:** On the host, UFW denies all routed/incoming IPv6 traffic except port 22, and `ss -tulpn` confirms only `[::]:22` is listening. However, host firewall inspection is **not** a substitute for an external IPv6 probe: because the audit workstation lacked IPv6 ISP routing (`[WinError 10051]`), external IPv6 reachability remains **PENDING / INCONCLUSIVE** until tested from an IPv6-capable external host.
+5. **Host Hardening Baseline [PASS]:** UFW is active with `default deny incoming`, `default allow outgoing`, and `default deny routed`. Fail2ban `sshd` jail is actively monitoring systemd journal logs. SSH password and keyboard-interactive authentication are disabled; only Ed25519 key authentication is permitted.
 6. **Zero Secrets in Git & Vault Lifecycle [PASS]:** Local Vault file `ansible/vault/vextersoft_vps.vault.yml` was deleted post-deployment by the owner. Git history inspection confirms the file was **never committed**. The running tunnel container reads its persistent secret at `/opt/vextersoft/management/secrets/tunnel-token` (`mode 0440`, owned by `root:65532`).
+7. **Backup & Sandbox Restore Readiness [PROCEDURE DOCUMENTED / CI MECHANICS TESTED / LIVE OFF-HOST BACKUP & SUPERVISED RESTORE PENDING]:** Reusable helper `scripts/portainer_backup.py` and runbook instructions are implemented and tested in GitHub Actions using disposable Docker volumes and real Portainer CE containers. Executing the first live off-host backup copy and supervised sandbox restore on the VPS remains pending.
 
 ---
 
@@ -31,13 +34,13 @@ All core security invariants have been empirically verified:
 | **SEC-01** | Ingress | Cloudflare Access Identity Gate | **PASS** | `curl -v -L https://devops.vextersoft.com/` receives `302 Found` with `Www-Authenticate: Cloudflare-Access` and redirects to `https://vextersoft.cloudflareaccess.com` login form ("Log in to Portainer Devops"). Unauthenticated access to Portainer is blocked. |
 | **SEC-02** | Exposure | IPv4 Management Ports (9000, 9443, 8000) | **PASS** | External TCP socket probe to `<TARGET_HOST_IPV4>` timed out / refused on all management ports. Zero host port mappings in Docker Compose. |
 | **SEC-03** | Exposure | IPv4 Docker API Ports (2375, 2376) | **PASS** | External TCP probe to `<TARGET_HOST_IPV4>` on ports 2375 and 2376 confirmed closed. Docker daemon socket restricted to `/var/run/docker.sock` (`mode 0660`, `root:docker`). |
-| **SEC-04** | Exposure | IPv6 Management Exposure | **PASS (Host) / INCONCLUSIVE (External)** | Host-level: UFW default deny routed/incoming, `ss -tulpn` shows only `[::]:22` listening. External probe from test workstation was inconclusive due to client-side IPv4-only ISP routing (`[WinError 10051]`). |
+| **SEC-04** | Exposure | External IPv6 Management Exposure | **PENDING / INCONCLUSIVE (External) · PASS (Host)** | Host-level: UFW default deny routed/incoming, `ss -tulpn` shows only `[::]:22` listening. External probe from test workstation could not traverse IPv6 (`[WinError 10051]`); external IPv6 reachability remains pending an IPv6-capable external vantage test. |
 | **SEC-05** | Host SSH | Pubkey Authentication Enforced | **PASS** | `sudo sshd -T` confirms `pubkeyauthentication yes`, `passwordauthentication no`, `kbdinteractiveauthentication no`, `permitrootlogin without-password`. |
 | **SEC-06** | Host Firewall | UFW Restrictive Baseline | **PASS** | `sudo ufw status verbose` confirms active status, default incoming deny, default routed deny, and only port 22/tcp allowed. |
 | **SEC-07** | Host IDS | Fail2ban Active Protection | **PASS** | `fail2ban-client status sshd` reports active jail monitoring journald, with over 350 malicious brute-force IPs banned. |
-| **SEC-08** | Storage | Resource Allocation Reconciliation | **PASS** | Raw `/proc/meminfo` confirms `MemTotal: 12247552 kB` (12 GB RAM) and `df -h /` confirms 193 GB SSD (`/dev/sda1`), matching the Contabo plan. |
-| **SEC-09** | Secret Hygiene | Vault File Untracked in Git | **PASS** | `git log --all --full-history -- ansible/vault/vextersoft_vps.vault.yml` confirmed 0 commits. `.gitignore` rule 3 active. |
-| **SEC-10** | Backup | Volume Backup Consistency | **PASS** | Runbook updated with read-only volume snapshot, integrity verification, off-host transfer, and 30-day retention procedures. |
+| **SEC-08** | Storage | Resource Allocation Reconciliation | **PASS** | Raw `/proc/meminfo` confirms `MemTotal: 12247552 kB` (12 GB contracted RAM / ~11.68 GiB binary OS-usable) and `df -h /` confirms 193 GiB ext4 SSD (`/dev/sda1` on 200 GB disk), matching the Contabo Cloud VPS 6 plan. |
+| **SEC-09** | Secret Hygiene | Vault File Untracked in Git | **PASS** | `git log --all --full-history -- ansible/vault/vextersoft_vps.vault.yml` confirmed 0 commits. `.gitignore` rule active. |
+| **SEC-10** | Backup | Volume Backup & Sandbox Restore | **PROCEDURE DOCUMENTED / CI MECHANICS TESTED / LIVE PROOF PENDING** | Shared helper `scripts/portainer_backup.py` and runbook cover quiesced `try...finally` restart, archive integrity verification, and isolated sandbox restore. CI tests mechanics in an ephemeral runner; live off-host backup copy and supervised VPS sandbox restore remain pending. |
 
 ---
 
@@ -91,7 +94,7 @@ Independent network socket probes were executed against origin IPv4 (`<TARGET_HO
   Port  2376/tcp (Docker TLS API)                 -> CLOSED / FILTERED    [PASS]
 
 --- IPv6 Connectivity Test: <TARGET_HOST_IPV6> ---
-  External Client Reachability                    -> INCONCLUSIVE (Client ISP IPv4-only route)
+  External Client Reachability                    -> PENDING / INCONCLUSIVE (Client ISP IPv4-only route)
   Host-Level IPv6 UFW Policy                      -> PASS (Default deny routed/incoming)
   Host-Level IPv6 Listening Sockets               -> PASS (Only [::]:22 active; zero management listeners)
 ```
@@ -129,6 +132,8 @@ In an earlier diagnostic step, the command `SSH and user diagnostic` failed with
 
 ---
 
-## 5. Audit Conclusion
+## 5. Audit Conclusion & Remaining Operational Proof Items
 
-The deployment is certified **OPERATIONAL** and adheres strictly to the security invariants established in `AGENT_PROTOCOL.md` and `docs/issue-6-spec.md`.
+The deployment is **OPERATIONAL** and all directly testable controls (`SEC-01` through `SEC-03`, `SEC-05` through `SEC-09`) passed verification. Overall security sign-off remains **PARTIALLY VERIFIED** until the following two non-code operational proofs are recorded:
+1. **External IPv6 Reachability (`SEC-04`):** Execute `python3 scripts/diagnostics/audit_vps_live.py --target-ip <TARGET_HOST_IPV6>` from an IPv6-capable external network to complement the verified host-level UFW and socket state.
+2. **Live Off-Host Backup & Supervised Sandbox Restore (`SEC-10`):** Execute `scripts/portainer_backup.py backup` on the VPS, transfer the verified archive to an approved off-host storage destination, and run a supervised `restore-sandbox` test into a disposable volume.

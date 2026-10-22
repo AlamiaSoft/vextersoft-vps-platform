@@ -3,11 +3,11 @@
 **Host Identifier:** `vmi3682629`  
 **Provider:** Contabo Cloud VPS  
 **Contracted Profile:** 6 vCPU / 12 GB RAM / 200 GB SSD  
-**Public IPv4:** `<TARGET_HOST_IPV4>` (Refer to private inventory / `.env`)  
+**Public IPv4:** `<TARGET_HOST_IPV4>` (Resolved via ignored `ansible/inventory/hosts.yml`)  
 **Public IPv6:** `<TARGET_HOST_IPV6>`  
 **Last Audit Date:** 2026-10-22  
 **Audit Type:** Post-Deployment Verification & Security Audit  
-**Status:** Deployed & Operational (Phase A through D Complete)  
+**Status:** Operational — Partially Verified (Phase A through D Complete; External IPv6 & Live Off-Host Backup Proof Pending)  
 
 ---
 
@@ -72,7 +72,7 @@
 - **Docker Compose:** v2 plugin installed
 - **Daemon Configuration:** Restricted socket `/var/run/docker.sock` (mode `0660`, group `docker`), no TCP listeners (`0.0.0.0:2375`/`2376` absent).
 - **Management Project Location:** `/opt/vextersoft/management`
-  - Permissions: directory `0750`, `secrets/` directory `0700`
+  - Permissions: directory `0750`, `secrets/` directory `0750` (group `65532`)
   - Tunnel Token Secret: `/opt/vextersoft/management/secrets/tunnel-token` (`mode 0440`, owner `root:65532`)
 - **Active Containers:**
   - `vextersoft-management-portainer-1`:
@@ -88,8 +88,8 @@
     - User: `65532:65532` (non-root)
     - Healthcheck: `cloudflared tunnel --metrics 127.0.0.1:2000 ready`
 - **Docker Networks:**
-  - `vextersoft-management` (bridge): Attaches `portainer` and `cloudflared`
-  - `vextersoft-tunnel-egress` (bridge): Attaches `cloudflared` for outbound routing
+  - `vextersoft-management` (bridge, `internal: true`): Attaches `portainer` and `cloudflared`
+  - `vextersoft-tunnel-egress` (bridge, `internal: false`): Attaches `cloudflared` for outbound routing
 
 ---
 
@@ -102,8 +102,12 @@
   - `127.0.0.53:53`, `127.0.0.54:53` (systemd-resolved)
   - Zero other TCP/UDP ports listening on host interfaces.
 - **External Network Audit (Direct Origin Scan on `<TARGET_HOST_IPV4>`):**
-  - Port 22 (SSH): Accessible
-  - Port 9000 (Portainer HTTP): Closed / Unreachable
-  - Port 9443 (Portainer HTTPS): Closed / Unreachable
-  - Port 8000 (Portainer Edge): Closed / Unreachable
-  - Port 2375 (Docker API): Closed / Unreachable
+  - Port 22 (SSH): Accessible (`PASS`)
+  - Port 80 / 443 (HTTP/HTTPS): Closed / Unreachable (`PASS`)
+  - Port 9000 (Portainer HTTP): Closed / Unreachable (`PASS`)
+  - Port 9443 (Portainer HTTPS): Closed / Unreachable (`PASS`)
+  - Port 8000 (Portainer Edge): Closed / Unreachable (`PASS`)
+  - Port 2375 / 2376 (Docker API): Closed / Unreachable (`PASS`)
+- **External IPv6 Audit (`<TARGET_HOST_IPV6>`):**
+  - Host-level UFW & listening sockets: `PASS` (`deny (incoming)`, `deny (routed)`, only `[::]:22` listening)
+  - External IPv6 vantage scan: `PENDING / INCONCLUSIVE` (Audit workstation lacked IPv6 ISP route; requires external IPv6-capable probe)
