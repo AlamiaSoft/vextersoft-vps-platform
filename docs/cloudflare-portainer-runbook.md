@@ -20,6 +20,7 @@ This runbook provisions a single VPS management plane. It does not manage Cloudf
 - Strict SSH host-key verification is working from WSL. Keep `host_key_checking = True`.
 - Install Ansible collections from the repository root: `ansible-galaxy collection install -r ansible/requirements.yml`.
 - Ansible inventory exists locally at `ansible/inventory/hosts.yml` and names the intended server alias.
+- The selected alias must be a member of `vps_servers` and resolve to one literal host, SSH user, and valid port. The operator prints only those target details before asking for typed approval; it refuses placeholders, unsupported connection types, or ambiguous inventory.
 
 ## Cloudflare setup required before deployment
 
@@ -57,6 +58,8 @@ cloudflare_tunnel_token: "PASTE_THE_TUNNEL_TOKEN_IN_THE_EDITOR"
 
 Save and close the editor. The file is ignored by Git and encrypted by Ansible Vault. Do not put the token in chat, shell arguments, environment variables, Compose files, issue comments, or logs. The deployment copies it to a root-owned, read-only host file and mounts it into cloudflared as a file secret. Tasks touching the token suppress both logs and diffs. Cloudflare supports `--token-file` for remotely managed tunnels with cloudflared 2025.4.0 and later ([run parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/)).
 
+The playbook verifies that `vault.yml` begins with the Ansible Vault encryption header and loads the token into a dedicated `cloudflare_vault` namespace. It does not accept a plaintext token variable from inventory or the command line. Keep the management hostname and route list in the ignored `cloudflare.yml`; those per-host values override the safe playbook defaults.
+
 For another server, create its own host_vars directory and its own tunnel token. Keep hostnames and app routes in that server's ignored `cloudflare.yml`; keep only credentials in its Vault-encrypted `vault.yml`.
 
 ## Validation and deployment
@@ -65,7 +68,7 @@ Run from WSL at the repository root. The normal Ansible config enforces SSH host
 
 ```bash
 export ANSIBLE_CONFIG="$PWD/ansible/ansible.cfg"
-ansible-playbook --ask-vault-pass --syntax-check \
+ansible-playbook --syntax-check \
   -i ansible/inventory/hosts.yml \
   ansible/playbooks/03-cloudflared-portainer.yml
 ansible -i ansible/inventory/hosts.yml vextersoft_vps -m ping
@@ -83,7 +86,7 @@ ansible-playbook --ask-vault-pass --diff \
   ansible/playbooks/03-cloudflared-portainer.yml
 ```
 
-The approval variable defaults to false. Do not run with it enabled until the Cloudflare tunnel, exact hostname, Access policy, provider egress, and target inventory have been reviewed. Do not disable host-key checking.
+The PowerShell operator performs syntax and strict SSH connectivity checks without asking for the Vault password. It asks for the Vault password once, at deployment time. The command above is the direct Ansible equivalent. The PowerShell ingress action additionally requires `-ApproveHostChange` and the exact typed phrase `APPLY ingress <inventory-alias>`; it sets `cloudflare_deployment_approved=true` only after that confirmation. The playbook's own approval variable defaults to false. Do not run it enabled until the Cloudflare tunnel, exact hostname, Access policy, provider egress, and target inventory have been reviewed. Do not disable host-key checking.
 
 After Ansible succeeds, verify:
 
@@ -98,6 +101,8 @@ ansible -i ansible/inventory/hosts.yml vextersoft_vps -m command -a "ufw status 
 ```
 
 Confirm both services report healthy, the tunnel shows connected in Cloudflare, the Portainer login loads after Access authentication, an unapproved identity is denied, and no Docker API or Portainer port is published on the host. Test a future public app with an unauthenticated browser session only after its route has been explicitly configured.
+
+The preflight reads UFW defaults, IPv4/IPv6 forwarding rules, host listeners, Docker port bindings, and Docker network membership. It stops if it cannot inspect both firewall rule tables, finds common database-port listeners/publications/DNAT rules, or finds unexpected containers on management, tunnel-egress, or configured public frontend networks. These checks are guardrails, not a complete firewall audit; review provider firewall rules and Docker networking before approval. The playbook never changes UFW and does not treat UFW as sufficient protection from Docker-published ports.
 
 ## Adding a public application route
 
@@ -119,6 +124,17 @@ For each public web frontend:
 5. Never add database, Docker API, SSH, Portainer, or other management targets to `cloudflare_public_routes`.
 
 ## Updates, rollback, and recovery
+
+If the Ansible run fails, do not blindly rerun it. First inspect whether the management project and its persistent resources were created:
+
+```bash
+docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml ps --all
+docker network ls --filter name='vextersoft-management'
+docker network ls --filter name='vextersoft-tunnel-egress'
+docker volume inspect vextersoft_portainer_data
+```
+
+These commands are read-only. Compare the containers, network isolation, and volume labels with the failed task. Preserve the Portainer volume and root-managed token file while investigating. Inspect logs without printing the mounted token or reading its file. Resolve the specific cause, then review the Ansible diff and obtain fresh approval before another host-changing run. If routing or Access is the problem, correct it in Cloudflare separately; do not expose a host port as a workaround.
 
 - Image versions are deliberately managed in the playbook variables: Portainer CE `2.45.1` LTS and cloudflared `2026.10.2`. Review [Portainer releases](https://github.com/portainer/portainer/releases) and [cloudflared releases](https://github.com/cloudflare/cloudflared/releases) before updating tags; do not use `latest`. Test a planned version change before redeploying.
 - Normal rollback stops and removes only the Compose containers. It preserves Portainer's external named volume:

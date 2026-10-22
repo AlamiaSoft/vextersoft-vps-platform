@@ -54,19 +54,16 @@ HOST_ALIAS=__ALIAS__
     return $prefix.Replace('__REPO__', $repo).Replace('__CONFIG__', $config).Replace('__INVENTORY__', $inventory).Replace('__ALIAS__', (Quote-Bash $HostAlias))
 }
 $targetDetails = @'
-TARGET_JSON=$(ansible-inventory -i "$INVENTORY" --host "$HOST_ALIAS")
-TARGET_HOST=$(printf '%s' "$TARGET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ansible_host", ""))')
-TARGET_USER=$(printf '%s' "$TARGET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ansible_user", ""))')
-TARGET_PORT=$(printf '%s' "$TARGET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ansible_port", 22))')
-TARGET_SSH_PORT=$(printf '%s' "$TARGET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ssh_port", 22))')
-if [ -z "$TARGET_HOST" ] || [ -z "$TARGET_USER" ] || ! [[ "$TARGET_PORT" =~ ^[0-9]+$ ]] || ! [[ "$TARGET_SSH_PORT" =~ ^[0-9]+$ ]]; then
-  echo "Inventory alias is missing an unambiguous host, user, or SSH port." >&2
-  exit 2
-fi
+INVENTORY_JSON=$(ansible-inventory -i "$INVENTORY" --list)
+TARGET_JSON=$(printf %s "$INVENTORY_JSON" | python3 scripts/resolve_ansible_target.py "$HOST_ALIAS")
+TARGET_HOST=$(printf %s "$TARGET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["host"])')
+TARGET_USER=$(printf %s "$TARGET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["user"])')
+TARGET_PORT=$(printf %s "$TARGET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["port"])')
+TARGET_SSH_PORT=$(printf %s "$TARGET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ssh_port"])')
+printf 'Target: %s:%s (user %s; alias %s)\n' "$TARGET_HOST" "$TARGET_PORT" "$TARGET_USER" "$HOST_ALIAS"
 '@
 function Get-Validation([string]$SelectedPhase) {
     $playbook = Quote-Bash $playbooks[$SelectedPhase]
-    $vault = if ($SelectedPhase -eq 'ingress') { ' --ask-vault-pass' } else { '' }
     $portCheck = if ($SelectedPhase -eq 'baseline') {
         @'
 if [ "$TARGET_PORT" != "$TARGET_SSH_PORT" ]; then
@@ -77,10 +74,10 @@ fi
     } else { '' }
     $command = @'
 __PORT_CHECK__
-ansible-playbook --syntax-check -i "$INVENTORY" --limit "$HOST_ALIAS"__VAULT__ __PLAYBOOK__
-ansible -i "$INVENTORY" "$HOST_ALIAS" -m ping__VAULT__
+ansible-playbook --syntax-check -i "$INVENTORY" --limit "$HOST_ALIAS" __PLAYBOOK__
+ansible -i "$INVENTORY" "$HOST_ALIAS" -m ping
 '@
-    return $command.Replace('__PORT_CHECK__', $portCheck).Replace('__VAULT__', $vault).Replace('__PLAYBOOK__', $playbook)
+    return $command.Replace('__PORT_CHECK__', $portCheck).Replace('__PLAYBOOK__', $playbook)
 }
 function Invoke-Doctor {
     $distroOutput = & wsl.exe --list --quiet 2>$null
@@ -104,7 +101,6 @@ source /etc/os-release
 printf 'WSL OS: %s\n' "$PRETTY_NAME"
 printf 'Repository: %s\n' "$PWD"
 printf 'Inventory alias: %s\n' "$HOST_ALIAS"
-printf 'Target: %s:%s (user %s)\n' "$TARGET_HOST" "$TARGET_PORT" "$TARGET_USER"
 if command -v ansible-playbook >/dev/null 2>&1; then
   ansible-playbook --version | head -n 1
 else
@@ -245,8 +241,7 @@ function Invoke-HostPhase {
 ansible-playbook --diff -i "$INVENTORY" --limit "$HOST_ALIAS"__EXTRA__ __PLAYBOOK__
 ansible -i "$INVENTORY" "$HOST_ALIAS" -m ping__PING_VAULT__
 '@
-    $pingVault = if ($Phase -eq 'ingress') { ' --ask-vault-pass' } else { '' }
-    $apply = $apply.Replace('__EXTRA__', $extra).Replace('__PING_VAULT__', $pingVault).Replace('__PLAYBOOK__', $playbook)
+    $apply = $apply.Replace('__EXTRA__', $extra).Replace('__PING_VAULT__', '').Replace('__PLAYBOOK__', $playbook)
     Invoke-Wsl ((Get-Prefix) + [Environment]::NewLine + $targetDetails + [Environment]::NewLine + $apply)
     if ($Phase -eq 'baseline') {
         $verify = @'
@@ -258,9 +253,7 @@ ansible -i "$INVENTORY" "$HOST_ALIAS" -m shell -a 'set -e; test "$(systemctl is-
 '@
     } else {
         $verify = @'
-ansible -i "$INVENTORY" "$HOST_ALIAS" -m command -a 'docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml ps'
-ansible -i "$INVENTORY" "$HOST_ALIAS" -m command -a 'ss -lnt'
-ansible -i "$INVENTORY" "$HOST_ALIAS" -m command -a 'ufw status verbose'
+ansible -i "$INVENTORY" "$HOST_ALIAS" -m shell -a 'set -e; for name in vextersoft-management-portainer-1 vextersoft-management-cloudflared-1; do state=$(docker inspect --format "{{ "{{" }}.State.Status{{ "}}" }} {{ "{{" }}.State.Health.Status{{ "}}" }}" "$name"); test "$state" = "running healthy"; done; docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml ps; ss -lnt; ufw status verbose'
 '@
     }
     Invoke-Wsl ((Get-Prefix) + [Environment]::NewLine + $targetDetails + [Environment]::NewLine + $verify)

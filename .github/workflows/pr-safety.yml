@@ -66,7 +66,8 @@ jobs:
             python -m pip install --disable-pip-version-check ansible-lint ansible-core
             ansible-galaxy collection install -r ansible/requirements.yml
             ansible-lint ansible/
-            ansible-playbook --syntax-check ansible/playbooks/01-baseline-hardening.yml
+            ansible-playbook --syntax-check -i ansible/inventory/hosts.example.yml ansible/playbooks/01-baseline-hardening.yml
+            ansible-playbook --syntax-check -i ansible/inventory/hosts.example.yml ansible/playbooks/03-cloudflared-portainer.yml
           else
             echo "No Ansible playbooks found; skipping Ansible lint."
           fi

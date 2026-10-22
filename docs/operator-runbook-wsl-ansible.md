@@ -18,8 +18,8 @@ Implemented actions:
 
 - `doctor`: read-only checks for repository/inventory, WSL distro, Ansible/collections, SSH agent and the trusted host key.
 - `prepare`: installs the repository Ansible collections locally, safely copies the configured Windows SSH key only if the WSL copy is absent or identical, transfers only the already trusted host-key entry, and loads the key into a persistent WSL SSH agent socket. It does not change the VPS.
-- `validate`: checks playbook syntax and runs Ansible ping against the selected alias using strict host-key checking.
-- `baseline`, `docker`, `ingress`: each requires the explicit `-ApproveHostChange` switch and a typed confirmation phrase after displaying the target. The ingress action also prompts for the Ansible Vault password. Each action validates and pings before applying the corresponding playbook.
+- `validate`: resolves the selected alias through the `vps_servers` target group, displays its host, SSH port and user, checks playbook syntax, and runs Ansible ping using strict host-key checking. It fails closed on missing or ambiguous target data. For ingress it does not prompt for the Vault password because syntax validation and connectivity do not need to decrypt the token.
+- `baseline`, `docker`, `ingress`: each requires the explicit `-ApproveHostChange` switch and a typed confirmation phrase after displaying the resolved target. The ingress action prompts once for the Ansible Vault password at deployment. Each action validates and pings before applying the corresponding playbook; any command failure stops the workflow before post-deployment verification.
 
 Examples:
 
@@ -115,7 +115,7 @@ Syntax validation and `pong` confirm the local playbook parser, inventory, SSH t
 
 ## 5. Run host-changing phases
 
-The PowerShell operator prints the target, requires `-ApproveHostChange`, then asks for a typed confirmation phrase before execution. It stops after any failed validation or verification. Manual commands must follow the same approval and verification gate.
+The PowerShell operator verifies that the alias is in `vps_servers`, prints the target host, SSH port and user without printing other inventory variables, requires `-ApproveHostChange`, then asks for a typed confirmation phrase before execution. Strict host-key checking remains enabled and a failed SSH, ping, or sudo check stops the workflow. It stops after any failed apply or verification command. Manual commands must follow the same approval and verification gate.
 
 The baseline playbook configures the secure Ubuntu baseline. The Docker phase installs Docker Engine and Compose. The ingress phase installs Cloudflare Tunnel and Portainer. The ingress playbook defaults its extra approval flag to false, does not change UFW, and publishes no host ports.
 

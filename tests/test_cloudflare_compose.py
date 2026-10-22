@@ -23,7 +23,7 @@ def render_compose(public_routes, secret_path="/opt/vextersoft/management/secret
         cloudflare_portainer_volume="vextersoft_portainer_data",
         cloudflare_management_network="vextersoft-management",
         cloudflare_tunnel_egress_network="vextersoft-tunnel-egress",
-        cloudflare_public_routes=public_routes,
+        cloudflare_public_routes_effective=public_routes,
     )
     return yaml.safe_load(rendered)
 
@@ -90,7 +90,7 @@ class CloudflareComposeTests(unittest.TestCase):
             compose_path = temporary_path / "compose.yml"
             compose_path.write_text(
                 yaml.safe_dump(
-                    render_compose([], secret_path=str(secret_path)),
+                    render_compose([], secret_path=secret_path.as_posix()),
                     sort_keys=False,
                 )
             )
