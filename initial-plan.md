@@ -11,7 +11,7 @@
 ## 2. Initial read-only VPS inspection
 
 The original read-only audit findings and detailed inventory are documented in:
-- [Raw VPS inspection notes](docs/vps-inspection-raw.txt)
+- Raw VPS inspection notes (preserved in untracked local diagnostic logs)
 - [Infrastructure inventory](docs/infrastructure-inventory.md)
 - [System architecture](.ai/permanent/architecture/01-system-architecture.md)
 - [Security audit and hardening plan](docs/security-audit-and-hardening-plan.md)
