@@ -1,9 +1,9 @@
 # Trainee Handover & Backup Operational Proof Checklist
 
-**Epic:** [#27 — Make VPS backup/restore workflow safe, tested, and trainee-ready](https://github.com/AlamiaSoft/vextersoft-vps-platform/issues/27)  
-**Central Tracker:** [#14 — VexterSoft VPS Platform Execution Checklist](https://github.com/AlamiaSoft/vextersoft-vps-platform/issues/14)  
-**Canonical Helper:** [`scripts/portainer_backup.py`](../scripts/portainer_backup.py)  
-**Canonical Runbook:** [`docs/devops-handover-runbook.md`](devops-handover-runbook.md)  
+**Epic:** [#27 — Make VPS backup/restore workflow safe, tested, and trainee-ready](https://github.com/AlamiaSoft/vextersoft-vps-platform/issues/27)
+**Central Tracker:** [#14 — VexterSoft VPS Platform Execution Checklist](https://github.com/AlamiaSoft/vextersoft-vps-platform/issues/14)
+**Canonical Helper:** [`scripts/portainer_backup.py`](../scripts/portainer_backup.py)
+**Canonical Runbook:** [`docs/devops-handover-runbook.md`](devops-handover-runbook.md)
 
 ---
 
@@ -13,7 +13,7 @@
 - [x] **Unit Test Suite (`#28`, `#30`, `#31`):** `tests/test_portainer_backup.py`, `tests/test_ci_backup_workflow.py`, `tests/test_backup_runbook.py`, and `tests/test_audit_reconciliation.py` cover invalid inputs, `source == target` rejection, corrupt/missing archives, `try...finally` restart-on-failure guarantees, and fail-closed target resolution.
 - [x] **GitHub Actions Docker Smoke Job (`#29`):** `.github/workflows/pr-safety.yml` (`backup-restore-smoke`) initializes a disposable volume with a real `portainer/portainer-ce:2.45.1-alpine` container (zero published host ports), executes quiesced backup, verifies the archive, restores into a fresh sandbox volume, boots a second Portainer container, verifies `InstanceID` database persistence, exercises failure paths, and cleans up all disposable resources in `if: always()`.
 
-> **Important Scope Boundary:**  
+> **Important Scope Boundary:**
 > A green CI run proves that `scripts/portainer_backup.py` and the backup/restore mechanics work against disposable Docker volumes in an ephemeral GitHub-hosted Linux runner. **It does NOT prove that a live VPS backup has been copied off-host or that a supervised restore has been performed on the production VPS.**
 
 ---
