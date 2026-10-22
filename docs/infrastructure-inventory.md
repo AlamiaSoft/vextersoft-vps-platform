@@ -1,13 +1,13 @@
 # Infrastructure Inventory & Host Baseline
 
-**Host Identifier:** `vmi3682629`  
-**Provider:** Contabo Cloud VPS  
-**Contracted Profile:** 6 vCPU / 12 GB RAM / 200 GB SSD  
-**Public IPv4:** `<TARGET_HOST_IPV4>` (Resolved via ignored `ansible/inventory/hosts.yml`)  
-**Public IPv6:** `<TARGET_HOST_IPV6>`  
-**Last Audit Date:** 2026-10-22  
-**Audit Type:** Post-Deployment Verification & Security Audit  
-**Status:** Operational — Partially Verified (Phase A through D Complete; External IPv6 & Live Off-Host Backup Proof Pending)  
+**Host Identifier:** `vmi3682629`
+**Provider:** Contabo Cloud VPS
+**Contracted Profile:** 6 vCPU / 12 GB RAM / 200 GB SSD
+**Public IPv4:** `<TARGET_HOST_IPV4>` (Resolved via ignored `ansible/inventory/hosts.yml`)
+**Public IPv6:** `<TARGET_HOST_IPV6>`
+**Last Audit Date:** 2026-10-22
+**Audit Type:** Post-Deployment Verification & Security Audit
+**Status:** Operational — Partially Verified (Phase A through D Complete; External IPv6 & Live Off-Host Backup Proof Pending)
 
 ---
 

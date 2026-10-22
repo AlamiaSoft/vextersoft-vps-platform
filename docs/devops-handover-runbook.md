@@ -1,10 +1,10 @@
 # DevOps Engineer Operational Handover Playbook
 
-**Platform:** VexterSoft Cloud VPS Platform  
-**Target Environment:** Contabo Ubuntu 24.04 LTS VPS (`vmi3682629` / `<TARGET_HOST_IPV4>`)  
-**Host Profile:** 6 vCPU / 12 GB contracted RAM (~11.68 GiB OS-usable) / 200 GB SSD (~193 GiB ext4)  
-**Management Console:** `https://devops.vextersoft.com`  
-**Last Updated:** 2026-10-22  
+**Platform:** VexterSoft Cloud VPS Platform
+**Target Environment:** Contabo Ubuntu 24.04 LTS VPS (`vmi3682629` / `<TARGET_HOST_IPV4>`)
+**Host Profile:** 6 vCPU / 12 GB contracted RAM (~11.68 GiB OS-usable) / 200 GB SSD (~193 GiB ext4)
+**Management Console:** `https://devops.vextersoft.com`
+**Last Updated:** 2026-10-22
 
 ---
 
@@ -239,9 +239,9 @@ sudo docker volume rm "$SANDBOX_VOL"
 ```
 
 #### 2. Production Volume Recovery Gate (`PRODUCTION-DESTRUCTIVE`)
-> **STOP / ESCALATION GATE FOR TRAINEES & AGENTS:**  
-> Restoring over or replacing the live Portainer volume (`vextersoft_portainer_data`) or deleting any persistent Docker volume is classified as **`PRODUCTION-DESTRUCTIVE`** under `AGENT_PROTOCOL.md`.  
-> - **Never** run an unguarded wipe command inside the live volume.  
+> **STOP / ESCALATION GATE FOR TRAINEES & AGENTS:**
+> Restoring over or replacing the live Portainer volume (`vextersoft_portainer_data`) or deleting any persistent Docker volume is classified as **`PRODUCTION-DESTRUCTIVE`** under `AGENT_PROTOCOL.md`.
+> - **Never** run an unguarded wipe command inside the live volume.
 > - **Never** execute a production restore without **explicit written owner approval** recorded on the relevant GitHub Issue naming the target host, target volume, verified backup SHA-256, outage window, and rollback plan.
 
 When an owner-approved production recovery is required:
