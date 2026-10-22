@@ -237,6 +237,8 @@ class IngressWorkflowSafetyTests(unittest.TestCase):
                 [
                     "#!/usr/bin/env bash",
                     "set -Eeuo pipefail",
+                    "INVENTORY=fixture",
+                    "HOST_ALIAS=vextersoft_vps",
                     "ansible() {",
                     "  local arg= next=",
                     "  while (($#)); do",
