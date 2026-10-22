@@ -2,11 +2,11 @@
 
 ## Executive Overview & Deployment Status
 
-- **Status:** **PARTIALLY VERIFIED (OPERATIONAL — EXTERNAL IPV6 & LIVE BACKUP PROOF PENDING)**  
-- **Audit Date:** 2026-10-22  
-- **Target Host:** Contabo Ubuntu 24.04.5 LTS VPS (`vmi3682629` / `<TARGET_HOST_IPV4>`)  
-- **Contracted Hardware Profile:** 6 vCPU / 12 GB contracted RAM (~11.68 GiB OS-usable) / 200 GB SSD (~193 GiB ext4) (Verified via `/proc/meminfo` and `df -h`)  
-- **Management Ingress:** `https://devops.vextersoft.com/` (Portainer CE 2.45.1-alpine)  
+- **Status:** **PARTIALLY VERIFIED (OPERATIONAL — EXTERNAL IPV6 & LIVE BACKUP PROOF PENDING)**
+- **Audit Date:** 2026-10-22
+- **Target Host:** Contabo Ubuntu 24.04.5 LTS VPS (`vmi3682629` / `<TARGET_HOST_IPV4>`)
+- **Contracted Hardware Profile:** 6 vCPU / 12 GB contracted RAM (~11.68 GiB OS-usable) / 200 GB SSD (~193 GiB ext4) (Verified via `/proc/meminfo` and `df -h`)
+- **Management Ingress:** `https://devops.vextersoft.com/` (Portainer CE 2.45.1-alpine)
 - **Access Control:** Outbound Cloudflare Argo Tunnel connector protected by Cloudflare Access identity policy; UFW default deny incoming.
 
 ---
