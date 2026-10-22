@@ -1,31 +1,22 @@
 # Sprint Current State
 
-**Last Updated:** 2026-10-21  
-**Current Phase:** Local implementation and validation of Cloudflare Tunnel + Portainer automation
+**Last Updated:** 2026-10-22  
+**Current Phase:** Phase D Complete — Cloudflare Tunnel + Private Portainer CE Ingress Operational & Verified
 
 ## Completed and verified phases
 
-- Bootstrap plan audit and execution DAG (Issue #2 / PR #8) refreshed and rebased against main.
-- Windows/WSL operator environment and Ansible workflow were established.
-- Baseline hardening was applied and verified on the initial Ubuntu 24.04 VPS.
-- Docker Engine and the Compose plugin were installed through Ansible; the Docker phase completed at `f5c08cb` and was merged to main in commit `7b25538`.
-- The current host uses a restrictive UFW baseline, with SSH as the only inbound allow rule; Docker API and management ports are not intentionally published.
-- The working repository's current main checkout contains unrelated local edits. Keep those edits untouched; ingress work is isolated in branch `agent/issue-6-cloudflare-portainer` in a separate worktree.
-
-## In progress
-
-- Build the local Cloudflare Tunnel + Portainer Ansible phase, Compose template, per-server secret/config pattern, recovery documentation, and operator commands.
-- Local implementation does not imply a Cloudflare tunnel/DNS/Access policy exists or that containers were deployed.
-- No VPS or Cloudflare account changes are authorized by this local implementation task.
-
-## Next steps
-
-1. Finish local playbook syntax, lint, template rendering, and operator script validation.
-2. Review the diff, commit the local implementation, and hand it off for review.
-3. Owner creates/verifies a remotely managed Cloudflare tunnel, configures the exact management hostname, and places its token in the local Ansible Vault file.
-4. Obtain separate explicit approval for deploying the ingress phase to a named VPS.
-5. Verify the tunnel connector, health checks, absence of public management ports, Access allow/deny behavior, and Portainer login.
-6. Add application hostnames only as explicitly reviewed public routes; leave app deployments in Portainer stacks.
+- **Phase A (Bootstrap):** Initial Contabo VPS bootstrap completed; non-root user `vexteradmin` provisioned with passwordless sudo and Ed25519 public key authentication. Strict host-key checking active.
+- **Phase B (Baseline Hardening):** Host hardened with restrictive UFW policy (`default deny incoming`, `default allow outgoing`, `default deny routed`, port 22/tcp allow only), Fail2ban active (`sshd` jail running), 4.0 GiB swap partition enabled, SSH password/keyboard-interactive authentication disabled (`sshd -T` verified).
+- **Phase C (Docker Engine):** Docker Engine `29.9.2` and Docker Compose v2 plugin installed and running under systemd with socket permissions restricted to `root:docker`.
+- **Phase D (Ingress & Management):**
+  - Project directory `/opt/vextersoft/management` and secrets directory `/opt/vextersoft/management/secrets` created (mode `0750` / `0700`).
+  - Cloudflare Tunnel connector deployed using root-managed file-based secret (`mode 0440`, group `65532`).
+  - Portainer CE deployed using pinned LTS Alpine image `portainer/portainer-ce:2.45.1-alpine`.
+  - Zero exposed management ports: Port 9000, 9443, and 8000 are unexposed to the host and bound strictly to private Docker bridge `vextersoft-management`.
+  - Container healthchecks active and healthy (`cloudflared tunnel --metrics ready` and Portainer HTTP `/api/system/status` spider check via busybox `wget`).
+  - Cloudflare Tunnel routing established: `devops.vextersoft.com` -> `http://portainer:9000`.
+  - External port audit verified: Origin IP `5.189.128.157` has ports 9000, 9443, 8000, 2375, and 2376 closed/unreachable externally; only port 22 is open.
+  - Portainer CE initial admin setup completed by the owner; environment connected to local Docker socket (`vextersoft-vps`).
 
 ## Scope boundary
 

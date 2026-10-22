@@ -99,7 +99,7 @@ class IngressWorkflowSafetyTests(unittest.TestCase):
         self.assertIn("content: \"{{ cloudflare_vault.cloudflare_tunnel_token | trim }}\\n\"", self.playbook_text)
         copy_task = next(t for t in self.playbook["tasks"] if "Install the tunnel token" in t["name"])
         self.assertTrue(copy_task["no_log"])
-        self.assertFalse(copy_task["ansible.builtin.copy"]["diff"])
+        self.assertFalse(copy_task["diff"])
 
     def test_vault_file_is_outside_auto_discovered_host_vars(self):
         expected_path = '{{ playbook_dir }}/../vault/{{ inventory_hostname }}.vault.yml'

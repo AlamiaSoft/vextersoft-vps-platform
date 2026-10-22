@@ -17,7 +17,7 @@ def render_compose(public_routes, secret_path="/opt/vextersoft/management/secret
     environment = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=False)
     template = environment.get_template(TEMPLATE_NAME)
     rendered = template.render(
-        cloudflare_portainer_image="portainer/portainer-ce:2.45.1",
+        cloudflare_portainer_image="portainer/portainer-ce:2.45.1-alpine",
         cloudflare_tunnel_image="cloudflare/cloudflared:2026.10.2",
         cloudflare_tunnel_secret_path=secret_path,
         cloudflare_portainer_volume="vextersoft_portainer_data",

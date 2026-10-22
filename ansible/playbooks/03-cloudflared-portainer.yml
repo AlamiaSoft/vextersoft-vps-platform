@@ -11,7 +11,7 @@
     cloudflare_management_network: vextersoft-management
     cloudflare_tunnel_egress_network: vextersoft-tunnel-egress
     cloudflare_portainer_volume: vextersoft_portainer_data
-    cloudflare_portainer_image: portainer/portainer-ce:2.45.1
+    cloudflare_portainer_image: portainer/portainer-ce:2.45.1-alpine
     cloudflare_tunnel_image: cloudflare/cloudflared:2026.10.2
     cloudflare_database_port_pattern: '(?:5432|3306|33060|27017|27018|27019|6379|1433|1434|9200|9300|11211)'
     cloudflare_database_dnat_rule_pattern: >-
@@ -530,14 +530,14 @@
         mode: "0750"
 
     - name: Install the tunnel token as a root-managed read-only secret file
+      diff: false
+      no_log: true
       ansible.builtin.copy:
         dest: "{{ cloudflare_tunnel_secret_path }}"
         content: "{{ cloudflare_vault.cloudflare_tunnel_token | trim }}\n"
         owner: root
         group: "65532"
         mode: "0440"
-        diff: false
-      no_log: true
 
     - name: Ensure the isolated management Docker network exists
       community.docker.docker_network:
