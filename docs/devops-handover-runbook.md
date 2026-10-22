@@ -1,10 +1,10 @@
 # DevOps Engineer Operational Handover Playbook
 
-**Platform:** VexterSoft Cloud VPS Platform  
-**Target Environment:** Contabo Ubuntu 24.04 LTS VPS (`vmi3682629` / `<TARGET_HOST_IPV4>`)  
-**Host Profile:** 6 vCPU / 12 GB RAM / 200 GB SSD  
-**Management Console:** `https://devops.vextersoft.com`  
-**Last Updated:** 2026-10-22  
+**Platform:** VexterSoft Cloud VPS Platform
+**Target Environment:** Contabo Ubuntu 24.04 LTS VPS (`vmi3682629` / `<TARGET_HOST_IPV4>`)
+**Host Profile:** 6 vCPU / 12 GB contracted RAM (~11.68 GiB OS-usable) / 200 GB SSD (~193 GiB ext4)
+**Management Console:** `https://devops.vextersoft.com`
+**Last Updated:** 2026-10-22
 
 ---
 
@@ -36,10 +36,10 @@
 ```
 
 ### Core Security Invariants
-1. **Zero Exposed Management Sockets:** Portainer ports `9000`, `9443`, `8000` and the Docker daemon `2375` must **never** be published to `0.0.0.0` or `[::]`.
+1. **Zero Exposed Management Sockets:** Portainer ports `9000`, `9443`, `8000` and the Docker daemon `2375`/`2376` must **never** be published to `0.0.0.0`, `[::]`, or `127.0.0.1`.
 2. **Egress-Only Tunneling:** All ingress traffic arrives via Cloudflare Tunnel. No inbound firewall rules are opened for web traffic.
-3. **Restricted SSH Access:** Password authentication is permanently disabled. Access requires an Ed25519 key for `vexteradmin` with strict host-key verification.
-4. **Zero Secrets in Git:** All secrets and credentials are git-ignored. The local Vault file was deleted post-deployment; server-side tokens reside in `/opt/vextersoft/management/secrets/tunnel-token` (`mode 0440`).
+3. **Restricted SSH Access:** Password authentication is permanently disabled. Access requires an Ed25519 key for `vexteradmin` with strict host-key verification (`StrictHostKeyChecking=yes`).
+4. **Zero Secrets in Git:** All secrets and credentials are git-ignored. The local Vault file (`ansible/vault/vextersoft_vps.vault.yml`) was deleted post-deployment; server-side tokens reside in `/opt/vextersoft/management/secrets/tunnel-token` (`mode 0440`, owned by `root:65532`).
 
 ---
 
@@ -51,15 +51,22 @@ The canonical control node is **Ubuntu on WSL2** (or any compliant Linux worksta
 - **SSH Client**: OpenSSH client with SSH Agent loaded with the authorized Ed25519 key
 - **PowerShell (optional)**: For running helper scripts (`scripts/vextersoft.ps1`)
 
-### Session Initialization in WSL
+### Session Initialization & Target Resolution in WSL
+Never rely on undefined shell variables or unvalidated `.env` files. Resolve the canonical target from the ignored local Ansible inventory (`ansible/inventory/hosts.yml`):
+
 ```bash
+# [LOCAL WORKSTATION — WSL2]
 cd /mnt/e/Alamia/vextersoft-vps-platform
 source ~/.venvs/vps-ansible/bin/activate
 
-# Verify SSH key is in agent
+# Verify SSH key is loaded in agent
 ssh-add -l
 
-# Verify connectivity to VPS
+# Resolve and verify the single canonical target host from Ansible inventory
+ansible-inventory -i ansible/inventory/hosts.yml --list \
+  | python3 scripts/resolve_ansible_target.py vextersoft_vps
+
+# Verify connectivity to VPS via strict SSH host-key checking
 ansible -i ansible/inventory/hosts.yml vextersoft_vps -m ping
 ```
 
@@ -67,134 +74,188 @@ ansible -i ansible/inventory/hosts.yml vextersoft_vps -m ping
 
 ## 3. Routine Diagnostic & Health Commands
 
-All commands in this section are **strictly read-only** and can be run at any time without approval.
+All commands in this section are **strictly read-only** (`READ-ONLY` risk class) and can be run without host-change approval.
 
 ### A. One-Command Full Live Audit (Persistent Operational Tool)
-The repository includes a dedicated, non-destructive audit tool that inspects external port exposure and queries live host resources, Docker containers, and logs:
+The repository includes a non-destructive audit tool (`scripts/diagnostics/audit_vps_live.py`) that resolves the target deterministically via `ansible/inventory/hosts.yml` (or explicit `--target-ip`) and fails closed on missing, placeholder (`<...>`), or documentation-range addresses:
 
 ```bash
-# Run from repository root (discovers target from .env)
-python scripts/diagnostics/audit_vps_live.py
+# [LOCAL WORKSTATION] Run using canonical Ansible inventory resolution
+python3 scripts/diagnostics/audit_vps_live.py --inventory ansible/inventory/hosts.yml --alias vextersoft_vps
 ```
 This tool verifies:
-- External accessibility of ports 22, 80, 443, 9000, 9443, 8000, 2375, and 2376.
+- External TCP accessibility of ports 22, 80, 443, 9000, 9443, 8000, 2375, and 2376 from the local vantage point (reporting IPv6 external checks as `INCONCLUSIVE` if the local workstation lacks IPv6 routing).
 - Host identity, CPU, raw memory (`/proc/meminfo`), and swap status.
 - UFW rules, Fail2ban status, and active socket listeners.
 - Docker containers, volumes, networks, and recent container logs.
 
 ### B. Quick Preflight Health Check (via PowerShell)
 ```powershell
+# [LOCAL WORKSTATION — PowerShell]
 powershell -ExecutionPolicy Bypass -File scripts/vextersoft.ps1 doctor
 powershell -ExecutionPolicy Bypass -File scripts/vextersoft.ps1 validate -Phase ingress
 ```
 
-### C. Direct Container & Service Status (via SSH)
+### C. Direct Container & Service Status (via Ansible or SSH)
 ```bash
-# Check management containers health and status
-ssh vexteradmin@$TARGET_HOST "sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+# [LOCAL WORKSTATION — WSL2] Check management containers health and status
+ansible -i ansible/inventory/hosts.yml vextersoft_vps -b -m command -a \
+  "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
 
-# Check container resource utilization
-ssh vexteradmin@$TARGET_HOST "sudo docker stats --no-stream"
+# [LOCAL WORKSTATION — WSL2] Check container resource utilization
+ansible -i ansible/inventory/hosts.yml vextersoft_vps -b -m command -a \
+  "docker stats --no-stream"
 
-# Inspect Docker volumes and networks
-ssh vexteradmin@$TARGET_HOST "sudo docker network ls && sudo docker volume ls"
+# [LOCAL WORKSTATION — WSL2] Inspect Docker volumes and networks
+ansible -i ansible/inventory/hosts.yml vextersoft_vps -b -m command -a \
+  "docker network ls"
+ansible -i ansible/inventory/hosts.yml vextersoft_vps -b -m command -a \
+  "docker volume ls"
 ```
 
 ### D. Reading Container Logs Safely
 ```bash
-# View Cloudflare Tunnel connector logs (last 50 lines)
-ssh vexteradmin@$TARGET_HOST "sudo docker logs --tail 50 vextersoft-management-cloudflared-1"
+# [LOCAL WORKSTATION — WSL2] View Cloudflare Tunnel connector logs (last 50 lines)
+ansible -i ansible/inventory/hosts.yml vextersoft_vps -b -m command -a \
+  "docker logs --tail 50 vextersoft-management-cloudflared-1"
 
-# View Portainer server logs (last 50 lines)
-ssh vexteradmin@$TARGET_HOST "sudo docker logs --tail 50 vextersoft-management-portainer-1"
+# [LOCAL WORKSTATION — WSL2] View Portainer server logs (last 50 lines)
+ansible -i ansible/inventory/hosts.yml vextersoft_vps -b -m command -a \
+  "docker logs --tail 50 vextersoft-management-portainer-1"
 ```
 
 ---
 
 ## 4. Maintenance, Backup & Recovery Lifecycle
 
-### A. Restarting the Management Stack
-If Portainer or Cloudflare Tunnel needs to be restarted:
+### A. Restarting the Management Stack (`HOST-CHANGE`)
+Restarting running services on the VPS is a `HOST-CHANGE` operation and requires owner approval before execution:
 ```bash
-# Restart without modifying volumes or configuration
-ssh vexteradmin@$TARGET_HOST "sudo docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml restart"
+# [ON VPS AS vexteradmin] Restart without modifying volumes or configuration
+sudo docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml restart
 ```
 
-### B. Portainer Persistent Data Backup Procedure
-Portainer stores its database (`portainer.db`), TLS certificates, and configurations in the named Docker volume `vextersoft_portainer_data`.
+### B. Portainer Persistent Data Backup Procedure (`scripts/portainer_backup.py`)
 
-#### Step 1: Ensure Consistency
-To guarantee database consistency without in-flight writes, briefly pause or stop Portainer (or mount the volume `:ro`):
+All Portainer volume backups and sandbox restores use the repository's single canonical helper: **`scripts/portainer_backup.py`**. Do not use ad-hoc `docker stop ... && docker run ... && docker start` shell one-liners, which can leave Portainer stopped if `tar` fails.
+
+#### 1. Backup Scope & Limitations (Must Read)
+- **What IS backed up:** Only the named Docker volume `vextersoft_portainer_data` (mounted at `/data` inside Portainer), which stores Portainer's embedded BoltDB database (`portainer.db`), internal TLS certificates, user accounts, and environment definitions.
+- **What is NOT backed up by this archive:**
+  1. **Management Compose file** (`/opt/vextersoft/management/compose.yml` — rendered from `ansible/templates/cloudflared-portainer.compose.yml.j2`).
+  2. **Cloudflare Tunnel secret** (`/opt/vextersoft/management/secrets/tunnel-token` — recovered/rotated via Cloudflare Zero Trust and Ansible Vault).
+  3. **Host OS & Firewall state** (UFW, SSHD, Fail2ban, sysctl — managed by `01-baseline-hardening.yml` and `02-docker-engine.yml`).
+  4. **Downstream application data** (future PostgreSQL clusters, Odoo filestores, or application volumes must have their own dedicated backup jobs).
+
+#### 2. Consistency Model: Why `:ro` Alone Does Not Guarantee Database Consistency
+- Mounting `vextersoft_portainer_data` as `:ro` (`readonly`) inside the helper container only prevents the **backup container** from writing to the volume. It **does not** pause or flush Portainer's own in-flight BoltDB writes if the Portainer container is still running.
+- **Quiesced Backup (Recommended / Application-Consistent):** Pass `--quiesce-container vextersoft-management-portainer-1` to `scripts/portainer_backup.py backup`. The helper stops Portainer before archiving and uses a `try...finally` block that **always attempts to restart Portainer (`docker start`) even if archive creation or verification fails**, removing any partial archive on error. *(Note: Stopping Portainer briefly interrupts the management UI (`HOST-CHANGE`), so schedule quiesced backups during approved maintenance windows).*
+- **Live Read-Only Snapshot (Crash-Consistent Only):** Omit `--quiesce-container` for a zero-downtime snapshot when no administrative changes are being made in Portainer.
+
+#### 3. Step-by-Step Backup Execution & Verification
+Copy `scripts/portainer_backup.py` to `/usr/local/sbin/portainer_backup.py` (or `/tmp/portainer_backup.py`) on the VPS, or execute from a checkout on the host:
+
 ```bash
-# Option 1: Live read-only snapshot (zero downtime)
-ssh vexteradmin@$TARGET_HOST "sudo docker run --rm \
-  -v vextersoft_portainer_data:/source:ro \
-  -v /var/backups:/backup \
-  alpine:latest tar -czf /backup/portainer-backup-\$(date +%Y%m%d-%H%M%S).tar.gz -C /source ."
+# [ON VPS AS vexteradmin]
+# Step 1: Preflight — verify Portainer is currently running and healthy, and check free disk space
+sudo docker inspect -f '{{.State.Running}} ({{.State.Health.Status}})' vextersoft-management-portainer-1
+df -h /var/backups
 
-# Option 2: Quiesced backup (recommended before major upgrades)
-ssh vexteradmin@$TARGET_HOST "sudo docker stop vextersoft-management-portainer-1 && \
-  sudo docker run --rm -v vextersoft_portainer_data:/source:ro -v /var/backups:/backup alpine:latest tar -czf /backup/portainer-backup-\$(date +%Y%m%d-%H%M%S).tar.gz -C /source . && \
-  sudo docker start vextersoft-management-portainer-1"
+# Step 2: Ensure restricted backup directory exists (root-only, mode 0700)
+sudo install -d -m 0700 -o root -g root /var/backups/vextersoft-portainer
+
+# Step 3: Execute quiesced backup + built-in archive verification via shared helper
+BACKUP_FILE="/var/backups/vextersoft-portainer/portainer-backup-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+python3 scripts/portainer_backup.py backup \
+  --source-volume vextersoft_portainer_data \
+  --archive-path "$BACKUP_FILE" \
+  --quiesce-container vextersoft-management-portainer-1 \
+  --sudo
+
+# Step 4: Postflight — confirm Portainer is running and healthy after backup
+sudo docker inspect -f '{{.State.Running}} ({{.State.Health.Status}})' vextersoft-management-portainer-1
 ```
 
-#### Step 2: Integrity Verification
-Verify that the archive is non-empty and uncorrupted:
+#### 4. Standalone Archive Integrity Verification
+`scripts/portainer_backup.py backup` runs verification automatically, but you should also run `verify-archive` after copying an archive to another machine or before any restore test:
+
 ```bash
-ssh vexteradmin@$TARGET_HOST "tar -tzf /var/backups/portainer-backup-*.tar.gz | grep portainer.db && echo 'BACKUP INTEGRITY VERIFIED'"
+# Verifies: file exists, size > 0, full gzip stream validity, tar readability,
+# no path-traversal members, and non-empty portainer.db presence. Outputs SHA-256 JSON.
+sudo python3 scripts/portainer_backup.py verify-archive \
+  --archive-path "$BACKUP_FILE"
 ```
 
-#### Step 3: Off-Host Storage Transfer
-Never rely solely on backups stored on the same VPS disk. Pull the verified backup to an off-host workstation or backup server:
-```bash
-# Pull archive to local operator workstation
-scp vexteradmin@$TARGET_HOST:/var/backups/portainer-backup-*.tar.gz ./backups/
-```
+#### 5. Off-Host Storage Transfer & Retention
+A backup stored only on the VPS disk (`/var/backups/vextersoft-portainer`) does **not** protect against VPS disk corruption or provider instance failure.
+1. Pull the verified archive to an approved off-host backup destination or operator workstation:
+   ```bash
+   # [LOCAL WORKSTATION — WSL2] Copy archive from VPS and restrict permissions
+   mkdir -p ./backups && chmod 0700 ./backups
+   # Replace <VPS_HOST> with the host resolved via scripts/resolve_ansible_target.py
+   scp vexteradmin@<VPS_HOST>:/var/backups/vextersoft-portainer/portainer-backup-YYYYMMDDTHHMMSSZ.tar.gz ./backups/
+   chmod 0600 ./backups/portainer-backup-*.tar.gz
 
-#### Step 4: Retention Policy
-Maintain a 30-day rolling retention on the VPS disk to prevent unbounded storage consumption:
-```bash
-# Delete backups older than 30 days
-ssh vexteradmin@$TARGET_HOST "find /var/backups -name 'portainer-backup-*.tar.gz' -mtime +30 -delete"
-```
+   # Verify the off-host copy locally using the exact same helper
+   python3 scripts/portainer_backup.py verify-archive \
+     --archive-path ./backups/portainer-backup-YYYYMMDDTHHMMSSZ.tar.gz
+   ```
+2. Compare the local `sha256` output against the VPS `sha256` output to confirm bit-for-bit transfer integrity.
+3. **Retention:** Retain 30 days of verified backups on `/var/backups/vextersoft-portainer` after confirming off-host copies exist.
+
+#### 6. Failure Recovery During Backup
+- If `tar` or archive verification fails during a quiesced backup, `scripts/portainer_backup.py` automatically deletes the partial/corrupt archive file and executes `sudo docker start vextersoft-management-portainer-1` in its `finally` block.
+- If the helper prints `CRITICAL: Failed to restart Portainer container`, immediately run:
+  ```bash
+  sudo docker start vextersoft-management-portainer-1
+  sudo docker compose -p vextersoft-management -f /opt/vextersoft/management/compose.yml ps
+  ```
+  and escalate to the platform owner before retrying.
+
+---
 
 ### C. Portainer Restoration & Recovery Testing
-To test or execute a restoration without corrupting live data:
 
-#### Test Restoration into a Sandbox Volume:
+#### 1. Routine Validation: Isolated Sandbox Volume Restore (`restore-sandbox`)
+Trainees and operators must **never** test backups by overwriting `vextersoft_portainer_data`. Always restore into a disposable sandbox volume using `restore-sandbox`, which enforces:
+- `target_volume` is never `vextersoft_portainer_data` or `portainer_data`.
+- `target_volume != source_volume`.
+- The archive passes `verify-archive` before any Docker volume is touched.
+- The target volume is newly created or completely empty (never running `rm -rf`).
+
 ```bash
-# 1. Create a temporary test volume
-ssh vexteradmin@$TARGET_HOST "sudo docker volume create portainer_data_restore_test"
+# [ON VPS OR TEST HOST]
+SANDBOX_VOL="portainer_sandbox_restore_$(date -u +%Y%m%d_%H%M%S)"
 
-# 2. Extract backup into the test volume
-ssh vexteradmin@$TARGET_HOST "sudo docker run --rm \
-  -v portainer_data_restore_test:/target \
-  -v /var/backups:/backup \
-  alpine:latest tar -xzf /backup/<BACKUP_FILE_NAME>.tar.gz -C /target"
+# 1. Restore archive into isolated sandbox volume and verify portainer.db inside it
+python3 scripts/portainer_backup.py restore-sandbox \
+  --archive-path "$BACKUP_FILE" \
+  --target-volume "$SANDBOX_VOL" \
+  --source-volume vextersoft_portainer_data \
+  --sudo
 
-# 3. Verify files and permissions in the test volume
-ssh vexteradmin@$TARGET_HOST "sudo docker run --rm -v portainer_data_restore_test:/data alpine:latest ls -la /data"
-
-# 4. Clean up test volume
-ssh vexteradmin@$TARGET_HOST "sudo docker volume rm portainer_data_restore_test"
+# 2. Clean up the disposable sandbox volume immediately after verification
+sudo docker volume rm "$SANDBOX_VOL"
 ```
 
-#### Production Restoration:
-1. Stop the Portainer container:
-   ```bash
-   ssh vexteradmin@$TARGET_HOST "sudo docker stop vextersoft-management-portainer-1"
-   ```
-2. Restore archive into the production volume:
-   ```bash
-   ssh vexteradmin@$TARGET_HOST "sudo docker run --rm \
-     -v vextersoft_portainer_data:/target \
-     -v /var/backups:/backup \
-     alpine:latest sh -c 'rm -rf /target/* && tar -xzf /backup/<BACKUP_FILE_NAME>.tar.gz -C /target'"
-   ```
-3. Restart Portainer container:
-   ```bash
-   ssh vexteradmin@$TARGET_HOST "sudo docker start vextersoft-management-portainer-1"
-   ```
+#### 2. Production Volume Recovery Gate (`PRODUCTION-DESTRUCTIVE`)
+> **STOP / ESCALATION GATE FOR TRAINEES & AGENTS:**
+> Restoring over or replacing the live Portainer volume (`vextersoft_portainer_data`) or deleting any persistent Docker volume is classified as **`PRODUCTION-DESTRUCTIVE`** under `AGENT_PROTOCOL.md`.
+> - **Never** run an unguarded wipe command inside the live volume.
+> - **Never** execute a production restore without **explicit written owner approval** recorded on the relevant GitHub Issue naming the target host, target volume, verified backup SHA-256, outage window, and rollback plan.
+
+When an owner-approved production recovery is required:
+1. Verify the candidate backup archive with `python3 scripts/portainer_backup.py verify-archive`.
+2. Restore the archive into a new staging volume (`portainer_recovery_YYYYMMDD`) via `restore-sandbox` and verify its contents first.
+3. Take a backup copy of the current `vextersoft_portainer_data` volume (even if degraded) so current state is preserved for forensic/rollback purposes.
+4. Only after owner sign-off on the verified staging volume, coordinate the Compose volume cutover and post-restore health verification (`https://devops.vextersoft.com`).
+
+#### 3. Current Validation Status vs. Pending Operational Proof
+- **CI Workflow Mechanics (`TESTED IN CI`):** GitHub Actions (`.github/workflows/pr-safety.yml` -> `backup-restore-smoke`) automatically tests `scripts/portainer_backup.py` on every PR and push to `main` using disposable Docker volumes and real `portainer/portainer-ce:2.45.1-alpine` containers (verifying quiesced backup, `try...finally` container restart on failure, archive integrity, sandbox restore, and Portainer `InstanceID` database persistence).
+- **Live VPS Operational Proof (`PENDING`):** Passing CI in an ephemeral GitHub-hosted runner **does not** prove that a real production backup has been copied off-host or restored on the VPS. The following operational handover steps remain pending until executed and evidenced by the operator/owner:
+  1. Designate an approved off-host backup storage destination.
+  2. Execute the first production `portainer_backup.py backup` run and copy the verified archive off-host.
+  3. Execute a supervised `restore-sandbox` verification test and record sanitized terminal evidence.
 
 ---
 
@@ -206,7 +267,7 @@ ssh vexteradmin@$TARGET_HOST "sudo docker volume rm portainer_data_restore_test"
    - Does **not** require Ansible or Vault to keep running, restart containers, or serve traffic.
 2. **The Local Workstation:**
    - The local Vault file `ansible/vault/vextersoft_vps.vault.yml` was deleted after the one-time deployment by the owner so no Vault password needs to be remembered.
-   - It is **not** required for running diagnostics, inspecting logs, or checking container health.
+   - It is **not** required for running diagnostics, inspecting logs, checking container health, or running `scripts/portainer_backup.py`.
 
 ### How to Recreate the Vault File for Future Deployments
 If you ever need to re-run `ansible-playbook ansible/playbooks/03-cloudflared-portainer.yml` (e.g. for redeployment, token rotation, or playbook reconfiguration):
@@ -243,16 +304,31 @@ When adding public web applications (e.g. `app.example.com`):
        service: web
        port: 8080
    ```
-4. **Deploy Ingress:** Run Ansible to attach `cloudflared` to `app_frontend`.
+4. **Deploy Ingress:** Run Ansible to attach `cloudflared` to `app_frontend` after obtaining `HOST-CHANGE` owner approval.
 5. **Cloudflare Zero Trust:** Add a public hostname route in Cloudflare Dashboard pointing `app.example.com` to `http://web:8080`.
 
 ---
 
-## 7. Actions Requiring Explicit Owner Approval
+## 7. Trainee Handover & Escalation Checklist
+
+| Step / Category | Status | Risk Class | Notes / Action Required |
+| :--- | :---: | :---: | :--- |
+| **1. Backup/Restore Helper & CI Smoke Test** | **COMPLETE (CI)** | `LOCAL-REPO` | `scripts/portainer_backup.py` + `backup-restore-smoke` job in `.github/workflows/pr-safety.yml` validate mechanics in ephemeral runner only. |
+| **2. Local Preflight & Target Validation** | **READY** | `READ-ONLY` | Use `scripts/vextersoft.ps1 doctor` / `validate` or `scripts/resolve_ansible_target.py` with `ansible/inventory/hosts.yml`. |
+| **3. Live Off-Host Backup Destination** | **PENDING OWNER** | `READ-ONLY` / Ops | Owner to designate off-host storage location for `portainer-backup-*.tar.gz` archives. |
+| **4. First Live Backup & Off-Host Copy** | **PENDING PROOF** | `HOST-CHANGE` (if quiesced) | Run `scripts/portainer_backup.py backup`, copy archive off-host, verify SHA-256 with `verify-archive`. |
+| **5. Supervised Live Sandbox Restore Test** | **PENDING PROOF** | `HOST-CHANGE` | Run `scripts/portainer_backup.py restore-sandbox` into a disposable volume (`portainer_sandbox_restore_*`) and remove the test volume. |
+| **6. External IPv6 Vantage Port Scan** | **PENDING / INCONCLUSIVE** | `READ-ONLY` | Run `audit_vps_live.py --target-ip <IPV6>` from an IPv6-capable external network to complement host-level UFW/socket proof. |
+| **7. Production Volume Cutover / Deletion** | **GATED** | `PRODUCTION-DESTRUCTIVE` | Requires explicit written owner approval on GitHub naming host, volume, verified backup SHA-256, and rollback plan. |
+
+---
+
+## 8. Actions Requiring Explicit Owner Approval
 
 According to `AGENT_PROTOCOL.md`:
 - Modifying firewall (UFW) rules or SSH daemon configuration (`HOST-CHANGE`).
 - Modifying system swap, kernel parameters, or system packages (`HOST-CHANGE`).
+- Stopping or restarting live management containers (`HOST-CHANGE`).
 - Reinstalling the operating system (`PROHIBITED` unless approved by owner).
-- Deleting named Docker volumes (`PRODUCTION-DESTRUCTIVE`).
+- Replacing or deleting named Docker volumes or executing a production restore (`PRODUCTION-DESTRUCTIVE`).
 - Modifying Cloudflare Access policies or rotating tunnel tokens (`PRODUCTION-DESTRUCTIVE`).
