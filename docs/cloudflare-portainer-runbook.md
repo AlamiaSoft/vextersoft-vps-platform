@@ -143,7 +143,7 @@ docker volume inspect vextersoft_portainer_data
 
 These commands are read-only. Compare the containers, network isolation, and volume labels with the failed task. Preserve the Portainer volume and root-managed token file while investigating. Inspect logs without printing the mounted token or reading its file. Resolve the specific cause, then review the Ansible diff and obtain fresh approval before another host-changing run. If routing or Access is the problem, correct it in Cloudflare separately; do not expose a host port as a workaround.
 
-- Image versions are deliberately managed in the playbook variables: Portainer CE `2.45.1` LTS and cloudflared `2026.10.2`. Review [Portainer releases](https://github.com/portainer/portainer/releases) and [cloudflared releases](https://github.com/cloudflare/cloudflared/releases) before updating tags; do not use `latest`. Test a planned version change before redeploying.
+- Image versions are deliberately managed in the playbook variables: Portainer CE `2.45.1` LTS (`portainer/portainer-ce:2.45.1-alpine`) and cloudflared `2026.10.2`. Review [Portainer releases](https://github.com/portainer/portainer/releases) and [cloudflared releases](https://github.com/cloudflare/cloudflared/releases) before updating tags; do not use `latest`. Test a planned version change before redeploying.
 - Normal rollback stops and removes only the Compose containers. It preserves Portainer's external named volume:
 
   ```bash
@@ -153,18 +153,19 @@ These commands are read-only. Compare the containers, network isolation, and vol
 
   Never add `-v` to routine rollback. Removing `vextersoft_portainer_data` deletes Portainer users, settings, and endpoint metadata and requires a separate destructive approval and a verified backup.
 - The Cloudflare DNS route and Access application are managed separately. For a full ingress rollback, first remove/disable the hostname route in Cloudflare, retain the Access policy, then stop the local stack. Existing application containers are not changed by this playbook.
-- Before a Portainer upgrade, stop Portainer and back up the data volume to protected off-host storage. Example, after creating a private backup directory and verifying available disk space:
+- Before a Portainer upgrade, take a verified quiesced backup of `vextersoft_portainer_data` using the repository's shared helper (`scripts/portainer_backup.py`), which guarantees restarting Portainer in a `finally` block even if archive creation or verification fails:
 
   ```bash
-  docker compose -p vextersoft-management -f compose.yml stop portainer
-  docker run --rm \
-    --mount type=volume,source=vextersoft_portainer_data,target=/data,readonly \
-    --mount type=bind,source="$PWD/backups",target=/backup \
-    alpine:3.23 tar -C /data -czf /backup/portainer-data-$(date -u +%Y%m%dT%H%M%SZ).tgz .
-  docker compose -p vextersoft-management -f compose.yml start portainer
+  sudo install -d -m 0700 -o root -g root /var/backups/vextersoft-portainer
+  BACKUP_FILE="/var/backups/vextersoft-portainer/portainer-data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+  python3 scripts/portainer_backup.py backup \
+    --source-volume vextersoft_portainer_data \
+    --archive-path "$BACKUP_FILE" \
+    --quiesce-container vextersoft-management-portainer-1 \
+    --sudo
   ```
 
-  Protect the backup as sensitive data and copy it off the VPS. Restore into a separate new volume first; verify it before approving any cutover. Never test restore by overwriting the active volume.
+  Protect the backup as sensitive data, copy it off the VPS, and verify the off-host copy with `python3 scripts/portainer_backup.py verify-archive --archive-path <FILE>`. Always validate restores into a separate disposable volume first using `python3 scripts/portainer_backup.py restore-sandbox`; never test restore by overwriting the active volume (`PRODUCTION-DESTRUCTIVE`). See `docs/devops-handover-runbook.md` for full backup scope, `:ro` vs. quiesced consistency details, and failure recovery steps.
 - If a tunnel token is exposed or invalid, create/rotate the connector token in Cloudflare, update the encrypted per-server Vault file locally, and redeploy only after approval. Revoke the old token in Cloudflare.
 - If Portainer data is corrupt, keep the current volume intact, stop the stack, restore a verified backup to a separate volume, and review the recovery plan before switching the Compose volume name.
 - When tunnel connectivity fails, verify outbound TCP/UDP 7844 with the provider, confirm the connector status in Cloudflare, inspect container health/logs without printing secret files, and test DNS/Access configuration. Do not open inbound ports as a workaround.
