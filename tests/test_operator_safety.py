@@ -1,10 +1,14 @@
 import json
+import os
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 import yaml
-from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -97,6 +101,70 @@ class IngressWorkflowSafetyTests(unittest.TestCase):
         self.assertTrue(copy_task["no_log"])
         self.assertFalse(copy_task["ansible.builtin.copy"]["diff"])
 
+    def test_vault_file_is_outside_auto_discovered_host_vars(self):
+        expected_path = '{{ playbook_dir }}/../vault/{{ inventory_hostname }}.vault.yml'
+        header_task = next(task for task in self.playbook["pre_tasks"] if "Check the per-host tunnel credential" in task["name"])
+        include_task = next(task for task in self.playbook["pre_tasks"] if "Load tunnel credential" in task["name"])
+        self.assertEqual(header_task["ansible.builtin.command"]["argv"][-1], expected_path)
+        self.assertEqual(include_task["ansible.builtin.include_vars"]["file"], expected_path)
+        self.assertIn("ansible/vault/*.vault.yml", (ROOT / ".gitignore").read_text(encoding="utf-8"))
+        self.assertIn('ansible-inventory -i "$INVENTORY" --list', self.operator)
+        self.assertNotRegex(self.operator, r"ansible-inventory[^\n]*ask-vault")
+
+    def test_inventory_list_ignores_real_encrypted_vault_file_without_prompt(self):
+        try:
+            from ansible.parsing.vault import VaultLib, VaultSecret
+            from ansible.constants import DEFAULT_VAULT_IDENTITY
+        except ImportError:
+            self.skipTest("ansible-core is not installed")
+        inventory_cli = shutil.which("ansible-inventory")
+        if not inventory_cli:
+            self.skipTest("ansible-inventory is not installed")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "ansible"
+            inventory_dir = root / "inventory"
+            host_vars = inventory_dir / "host_vars" / "vextersoft_vps"
+            vault_dir = root / "vault"
+            host_vars.mkdir(parents=True)
+            vault_dir.mkdir(parents=True)
+            (inventory_dir / "hosts.yml").write_text(
+                "all:\n  children:\n    vps_servers:\n      hosts:\n        vextersoft_vps:\n          ansible_host: 192.0.2.5\n          ansible_user: deploy\n",
+                encoding="utf-8",
+            )
+            (host_vars / "cloudflare.yml").write_text(
+                "cloudflare_management_hostname: devops.example.test\n",
+                encoding="utf-8",
+            )
+            synthetic_vault_yaml = b'cloudflare_tunnel_token: "synthetic-secret-never-output"\n'
+            vault = VaultLib([(DEFAULT_VAULT_IDENTITY, VaultSecret(b"test-only-password"))])
+            encrypted = vault.encrypt(synthetic_vault_yaml)
+            self.assertTrue(encrypted.startswith(b"$ANSIBLE_VAULT;"))
+            (vault_dir / "vextersoft_vps.vault.yml").write_bytes(encrypted)
+
+            env = os.environ.copy()
+            env["ANSIBLE_CONFIG"] = str(ROOT / "ansible" / "ansible.cfg")
+            try:
+                result = subprocess.run(
+                    [inventory_cli, "-i", str(inventory_dir / "hosts.yml"), "--list"],
+                    cwd=ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+            except OSError as exc:
+                if os.name == "nt":
+                    self.skipTest(f"Windows Ansible CLI is unavailable in this non-console session: {exc}")
+                raise
+            if result.returncode and "get_blocking" in result.stderr and os.name == "nt":
+                self.skipTest("Windows Ansible CLI requires a console; Linux CI runs this regression")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("synthetic-secret-never-output", result.stdout + result.stderr)
+            parsed = json.loads(result.stdout)
+            self.assertNotIn("cloudflare_tunnel_token", json.dumps(parsed))
+
     def test_dual_ingress_approval_and_single_vault_prompt(self):
         self.assertFalse(self.playbook["vars"]["cloudflare_deployment_approved"])
         approval = next(t for t in self.playbook["pre_tasks"] if "Require explicit approval" in t["name"])
@@ -130,9 +198,66 @@ class IngressWorkflowSafetyTests(unittest.TestCase):
     def test_post_deployment_checks_require_healthy_services(self):
         self.assertIn('test "$state" = "running healthy"', self.operator)
         self.assertIn("health", self.runbook.lower())
-        command = next(line for line in self.operator.splitlines() if "docker inspect --format" in line)
-        rendered = Environment().from_string(command).render()
-        self.assertIn('{{.State.Status}} {{.State.Health.Status}}', rendered)
+        verifications = re.findall(r"\$verify = @'\n(?P<body>.*?)\n'@", self.operator, re.DOTALL)
+        body = next((item for item in verifications if "format=$(printf" in item), None)
+        self.assertIsNotNone(body)
+        self.assertIn('format=$(printf "\\\\173\\\\173.State.Status\\\\175\\\\175 \\\\173\\\\173.State.Health.Status\\\\175\\\\175")', body)
+        self.assertNotIn("{{", body)
+
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git = shutil.which("git")
+            candidates = [Path(git).parent.parent / "bin" / "bash.exe"] if git else []
+            bash = next((str(path) for path in candidates if path.is_file()), bash)
+        if not bash:
+            self.skipTest("Bash is unavailable")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temp = Path(temporary)
+            bin_dir = temp / "bin"
+            bin_dir.mkdir()
+            log_path = temp / "docker-args.jsonl"
+            docker_stub = bin_dir / ("docker.cmd" if os.name == "nt" else "docker")
+            if os.name == "nt":
+                self.skipTest("A POSIX Bash runtime is required to exercise shell argument handling")
+            docker_stub.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ $1 == inspect ]]; then\n"
+                "  printf '%s\\n' \"$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' \"$@\")\" >> \"$DOCKER_ARGS_LOG\"\n"
+                "  printf 'running healthy\\n'\n"
+                "elif [[ $1 == compose ]]; then printf 'NAME STATUS\\n'; fi\n",
+                encoding="utf-8",
+            )
+            docker_stub.chmod(0o755)
+            for command in ("ss", "ufw"):
+                stub = bin_dir / command
+                stub.write_text("#!/usr/bin/env bash\nprintf 'stubbed\\n'\n", encoding="utf-8")
+                stub.chmod(0o755)
+            shell_script = "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -Eeuo pipefail",
+                    "ansible() {",
+                    "  local arg= next=",
+                    "  while (($#)); do",
+                    "    if [[ $1 == -a ]]; then shift; arg=$1; break; fi",
+                    "    shift",
+                    "  done",
+                    "  [[ -n $arg ]] || { echo 'missing Ansible shell argument' >&2; return 2; }",
+                    "  bash -c \"$arg\"",
+                    "}",
+                    body,
+                ]
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir.as_posix()}:{env['PATH']}" if os.name == "nt" else f"{bin_dir}{os.pathsep}{env['PATH']}"
+            env["DOCKER_ARGS_LOG"] = str(log_path)
+            result = subprocess.run([bash, "-c", shell_script], cwd=ROOT, env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            captured = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(captured), 2)
+            self.assertEqual(captured[0][:2], ["inspect", "--format"])
+            self.assertEqual(captured[0][2], "{{.State.Status}} {{.State.Health.Status}}")
 
 
 if __name__ == "__main__":

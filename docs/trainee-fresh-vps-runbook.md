@@ -302,7 +302,7 @@ Edit the ignored local `cloudflare.yml` and set the approved management hostname
 Create the encrypted token file:
 
 ```bash
-ansible-vault create ansible/inventory/host_vars/vextersoft_vps/vault.yml
+ansible-vault create ansible/vault/vextersoft_vps.vault.yml
 ```
 
 Inside the editor, add only the following YAML key with the token obtained from the approved secret source:
@@ -311,7 +311,7 @@ Inside the editor, add only the following YAML key with the token obtained from 
 cloudflare_tunnel_token: "INSERT_REAL_TOKEN_IN_LOCAL_VAULT_EDITOR"
 ```
 
-The example string above is a placeholder, not a working token. Save and close the editor. Never paste the token into chat or a terminal command. Confirm both per-host files are ignored by Git.
+The example string above is a placeholder, not a working token. Save and close the editor. Never paste the token into chat or a terminal command. Confirm both per-host files are ignored by Git. Keep the encrypted token under `ansible/vault/`, outside auto-discovered `host_vars`, so inventory checks do not prompt for the Vault password.
 
 ### Validate and deploy
 
