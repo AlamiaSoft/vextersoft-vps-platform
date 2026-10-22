@@ -13,30 +13,30 @@ The VexterSoft platform provides containerized application hosting with zero pub
         │
         ├──> [ Cloudflare Edge: devops.vextersoft.com ] ── (Zero Trust Access) ──┐
         │                                                                        │
-        └──> [ Cloudflare Edge: client apps (*.vextersoft.com) ] ── (Public TLS) ──┤
+        └──> [ Cloudflare Edge: future app routes ] ────── (Public TLS, Planned) ┤
                                                                                  │
 ┌────────────────────────────────────────────────────────────────────────────────▼─────────┐
 │ Contabo Cloud VPS 6 (Ubuntu 24.04.5 LTS / 6 vCPU / 12 GB RAM (~11.68 GiB) / 200 GB SSD)  │
 │                                                                                          │
 │  CURRENTLY DEPLOYED SERVICES (Phase D Operational):                                      │
-│  [ cloudflared daemon ] (Outbound encrypted tunnel — zero inbound web ports required)    │
+│  [ cloudflared connector ] (Outbound encrypted tunnel — zero inbound web ports required) │
 │          │                                                                               │
-│          └──> [ vextersoft-management ] ── Portainer CE 2.45.1-alpine (Internal :9000)   │
+│          ├──> [ vextersoft-tunnel-egress ] ── Outbound Cloudflare Edge connectivity      │
+│          └──> [ vextersoft-management ] ───── Portainer CE 2.45.1-alpine (Internal :9000)│
 │                                                                                          │
-│  PLANNED / FUTURE APPLICATION WORKLOADS (Not Yet Deployed):                              │
-│          ├──> [ net-odoo ] ────────── VexterSoft Odoo 20 + PostgreSQL 16 (Planned)       │
-│          ├──> [ net-zelixvet-prod ] ── ZelixVet Prod + Isolated Database (Planned)       │
-│          ├──> [ net-zelixvet-stg ] ─── ZelixVet Staging + Isolated Database (Planned)    │
-│          └──> [ net-demo ] ────────── Marketing Demonstration (Planned)                  │
+│  PLANNED / FUTURE APPLICATION WORKLOADS (Not Yet Deployed — Client/App Specific):        │
+│          ├──> [ <app-frontend-net> ] ──────── Future App Frontend (Opt-in per route)     │
+│          │                                      └── [ <app-backend-internal> ] ── DB     │
+│          └──> [ <staging-or-demo-net> ] ───── Future Isolated Staging / Demo Workloads   │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Deployed vs. Planned Workloads
+### Deployed Platform Baseline vs. Planned Workloads
 - **Currently Deployed on VPS (`vmi3682629`):**
-  - **Host Baseline & Runtime:** Ubuntu 24.04.5 LTS, UFW restrictive firewall (port 22/tcp allow only), Fail2ban `sshd` jail, 4.0 GiB swap, Docker Engine `29.9.2` + Compose v2.
+  - **Host Baseline & Runtime:** Ubuntu 24.04.5 LTS, UFW restrictive firewall (`22/tcp` allow only), Fail2ban `sshd` jail, 4.0 GiB swap, Docker Engine `29.9.2` + Compose v2.
   - **Management & Ingress Plane (`/opt/vextersoft/management`):** `cloudflare/cloudflared:2026.10.2` and `portainer/portainer-ce:2.45.1-alpine` isolated on internal network `vextersoft-management` and outbound bridge `vextersoft-tunnel-egress`, gated at `https://devops.vextersoft.com` by Cloudflare Access.
-- **Planned Future Workloads (Target Architecture Only):**
-  - Application stacks (Odoo 20, ZelixVet Production/Staging, Marketing Demo) are **not yet deployed** on the VPS. When onboarded, each public frontend will attach to its own dedicated Docker network via `cloudflare_public_routes` while keeping databases on private internal networks.
+- **Planned / Future Application Workloads (Not Yet Deployed):**
+  - Product and client-specific application stacks (such as future ERP, SaaS production/staging, or demonstration workloads) are **not deployed** as part of the base platform. When onboarded, each public frontend attaches to its own dedicated Docker network via `cloudflare_public_routes` while keeping databases on private internal networks.
 
 ---
 
