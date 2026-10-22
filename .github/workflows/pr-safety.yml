@@ -71,3 +71,163 @@ jobs:
           else
             echo "No Ansible playbooks found; skipping Ansible lint."
           fi
+
+  backup-restore-smoke:
+    name: backup-restore-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      PORTAINER_IMAGE: portainer/portainer-ce:2.45.1-alpine
+      HELPER_IMAGE: alpine:3.21
+      SRC_VOL: ci_portainer_source_vol
+      DST_VOL: ci_portainer_restored_vol
+      SRC_CTR: ci-portainer-src
+      DST_CTR: ci-portainer-restored
+      CI_NET: ci-portainer-internal-net
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Exercise Portainer volume backup, verification, sandbox restore, and failure safeguards
+        run: |
+          set -euo pipefail
+          BACKUP_DIR="$(mktemp -d)"
+          echo "BACKUP_DIR=$BACKUP_DIR" >> "$GITHUB_ENV"
+
+          docker pull "$PORTAINER_IMAGE"
+          docker pull "$HELPER_IMAGE"
+
+          docker network create --internal "$CI_NET"
+          docker volume create "$SRC_VOL"
+
+          # 1. Start source Portainer container with zero published host ports
+          docker run -d \
+            --name "$SRC_CTR" \
+            --network "$CI_NET" \
+            --mount "type=volume,source=$SRC_VOL,target=/data" \
+            --mount "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock" \
+            "$PORTAINER_IMAGE" \
+            --http-enabled -H unix:///var/run/docker.sock
+
+          # Wait for Portainer HTTP status API inside the container and capture InstanceID
+          SRC_STATUS=""
+          for i in $(seq 1 30); do
+            if SRC_STATUS="$(docker exec "$SRC_CTR" wget -qO- http://127.0.0.1:9000/api/system/status 2>/dev/null)" && [ -n "$SRC_STATUS" ]; then
+              break
+            fi
+            sleep 2
+          done
+          echo "Source Portainer status: $SRC_STATUS"
+          SRC_INSTANCE_ID="$(python -c 'import json, sys; data = json.loads(sys.argv[1]); assert data.get("InstanceID"), "Missing InstanceID"; print(data["InstanceID"])' "$SRC_STATUS")"
+          echo "Source InstanceID: $SRC_INSTANCE_ID"
+
+          # Verify zero host port bindings exist on the source container
+          SRC_PORTS="$(docker inspect -f '{{json .NetworkSettings.Ports}}' "$SRC_CTR")"
+          python -c 'import json, sys; ports = json.loads(sys.argv[1]); assert all(v is None for v in ports.values()), f"Unexpected published ports: {ports}"' "$SRC_PORTS"
+
+          # 2. Quiesced backup via shared helper (stops container, archives, verifies, restarts in finally)
+          ARCHIVE_PATH="$BACKUP_DIR/portainer-ci-backup.tar.gz"
+          python scripts/portainer_backup.py backup \
+            --source-volume "$SRC_VOL" \
+            --archive-path "$ARCHIVE_PATH" \
+            --quiesce-container "$SRC_CTR" \
+            --helper-image "$HELPER_IMAGE"
+
+          # Confirm source container was automatically restarted by the helper
+          test "$(docker inspect -f '{{.State.Running}}' "$SRC_CTR")" = "true"
+
+          # 3. Standalone archive verification
+          python scripts/portainer_backup.py verify-archive \
+            --archive-path "$ARCHIVE_PATH"
+
+          # 4. Sandbox restore into a fresh disposable volume
+          python scripts/portainer_backup.py restore-sandbox \
+            --archive-path "$ARCHIVE_PATH" \
+            --target-volume "$DST_VOL" \
+            --source-volume "$SRC_VOL" \
+            --helper-image "$HELPER_IMAGE"
+
+          # 5. Boot a second Portainer instance against the restored sandbox volume
+          docker run -d \
+            --name "$DST_CTR" \
+            --network "$CI_NET" \
+            --mount "type=volume,source=$DST_VOL,target=/data" \
+            --mount "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock" \
+            "$PORTAINER_IMAGE" \
+            --http-enabled -H unix:///var/run/docker.sock
+
+          DST_STATUS=""
+          for i in $(seq 1 30); do
+            if DST_STATUS="$(docker exec "$DST_CTR" wget -qO- http://127.0.0.1:9000/api/system/status 2>/dev/null)" && [ -n "$DST_STATUS" ]; then
+              break
+            fi
+            sleep 2
+          done
+          echo "Restored Portainer status: $DST_STATUS"
+          DST_INSTANCE_ID="$(python -c 'import json, sys; data = json.loads(sys.argv[1]); print(data["InstanceID"])' "$DST_STATUS")"
+          echo "Restored InstanceID: $DST_INSTANCE_ID"
+          test "$SRC_INSTANCE_ID" = "$DST_INSTANCE_ID"
+
+          # 6. Negative & failure-recovery assertions
+          # 6a. Corrupt archive must fail verification and sandbox restore
+          CORRUPT_ARCHIVE="$BACKUP_DIR/corrupt.tar.gz"
+          printf 'corrupt-gzip-payload' > "$CORRUPT_ARCHIVE"
+          if python scripts/portainer_backup.py verify-archive --archive-path "$CORRUPT_ARCHIVE"; then
+            echo "ERROR: corrupt archive unexpectedly passed verify-archive" >&2
+            exit 1
+          fi
+          if python scripts/portainer_backup.py restore-sandbox --archive-path "$CORRUPT_ARCHIVE" --target-volume "ci_portainer_corrupt_vol"; then
+            echo "ERROR: corrupt archive unexpectedly passed restore-sandbox" >&2
+            exit 1
+          fi
+
+          # 6b. Production volume target must be refused
+          if python scripts/portainer_backup.py restore-sandbox --archive-path "$ARCHIVE_PATH" --target-volume "vextersoft_portainer_data"; then
+            echo "ERROR: production volume target was not refused" >&2
+            exit 1
+          fi
+
+          # 6c. Non-empty volume target must be refused
+          if python scripts/portainer_backup.py restore-sandbox --archive-path "$ARCHIVE_PATH" --target-volume "$DST_VOL"; then
+            echo "ERROR: non-empty volume target was not refused" >&2
+            exit 1
+          fi
+
+          # 6d. Failed quiesced backup must still restart the stopped Portainer container
+          if python scripts/portainer_backup.py backup \
+            --source-volume "$SRC_VOL" \
+            --archive-path "$BACKUP_DIR/should-fail.tar.gz" \
+            --quiesce-container "$SRC_CTR" \
+            --expected-files "portainer.db,nonexistent_marker.db" \
+            --helper-image "$HELPER_IMAGE"; then
+            echo "ERROR: backup with missing expected marker unexpectedly succeeded" >&2
+            exit 1
+          fi
+          test "$(docker inspect -f '{{.State.Running}}' "$SRC_CTR")" = "true"
+          test ! -f "$BACKUP_DIR/should-fail.tar.gz"
+
+      - name: Clean up disposable CI containers, volumes, networks, and archives
+        if: always()
+        run: |
+          docker rm -f "$SRC_CTR" "$DST_CTR" >/dev/null 2>&1 || true
+          docker volume rm -f "$SRC_VOL" "$DST_VOL" "ci_portainer_corrupt_vol" >/dev/null 2>&1 || true
+          docker network rm "$CI_NET" >/dev/null 2>&1 || true
+          if [ -n "${BACKUP_DIR:-}" ] && [ -d "${BACKUP_DIR:-}" ]; then
+            rm -rf "$BACKUP_DIR"
+          fi
+
+      - name: Write backup/restore validation scope summary
+        if: always()
+        run: |
+          cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ### Portainer Backup & Sandbox Restore Smoke Test (`scripts/portainer_backup.py`)
+          - **Tested in CI:** Quiesced backup, container restart-on-failure guarantee (`try...finally`), gzip/tar/`portainer.db` verification, isolated sandbox volume restore, Portainer `InstanceID` persistence across restore, and negative guardrail rejections.
+          - **Scope Limitation:** This job exercises workflow mechanics using disposable Docker volumes in an ephemeral GitHub-hosted runner only. **It does NOT prove that a live VPS backup has been copied off-host or that a supervised restore has been executed on the production VPS.**
+          EOF
