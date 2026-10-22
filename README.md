@@ -13,7 +13,7 @@ The VexterSoft platform provides containerized application hosting with zero pub
         │
         ├──> [ Cloudflare Edge: devops.vextersoft.com ] ── (Zero Trust Access) ──┐
         │                                                                        │
-        └──> [ Cloudflare Edge: client apps (*.vextersoft.com) ] ── (Public TLS) ──┤
+        └──> [ Cloudflare Edge: future app routes ] ────── (Public TLS, Planned) ┤
                                                                                  │
 ┌────────────────────────────────────────────────────────────────────────────────▼─────────┐
 │ Contabo Cloud VPS 6 (Ubuntu 24.04.5 LTS / 6 vCPU / 12 GB RAM (~11.68 GiB) / 200 GB SSD)  │
