@@ -1,9 +1,9 @@
 # Trainee Runbook: Provision a Fresh VexterSoft Test VPS
 
-**Audience:** DevOps trainee engineer  
-**Risk class:** LOCAL-REPO for this document; host-changing steps below require separate owner approval  
-**Target:** One newly assigned, disposable test VPS from the approved test-resource pool  
-**Supported OS:** Ubuntu 24.04 LTS (the repository playbooks validate against this release)  
+**Audience:** DevOps trainee engineer
+**Risk class:** LOCAL-REPO for this document; host-changing steps below require separate owner approval
+**Target:** One newly assigned, disposable test VPS from the approved test-resource pool
+**Supported OS:** Ubuntu 24.04 LTS (the repository playbooks validate against this release)
 **Status:** Procedure for a human operator; this document does not authorize or perform any VPS or Cloudflare changes.
 
 > [!CAUTION]
